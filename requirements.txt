@@ -1,0 +1,13 @@
+torch
+faiss-cpu
+fastapi
+uvicorn
+wandb
+
+# Dev dependencies
+black
+ruff
+pytest
+pre-commit
+datasets
+tokenizers
