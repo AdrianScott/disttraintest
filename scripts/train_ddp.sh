@@ -7,7 +7,7 @@
 # -- Single-Node Config --
 # Set the number of GPUs to use per node.
 # For a single-machine run, this is the total number of GPUs you want to use.
-N_PROCS_PER_NODE=1
+N_PROCS_PER_NODE=${N_PROCS_PER_NODE:-1}
 
 # -- Multi-Node Config --
 # These variables are read from the environment, with defaults for single-node.
