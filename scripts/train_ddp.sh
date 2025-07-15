@@ -34,12 +34,14 @@ fi
 # --- Execution ---
 echo "Starting DDP training..."
 
-torchrun \
-    --nproc_per_node=${N_PROCS_PER_NODE} \
-    --nnodes=${NNODES} \
-    --node_rank=${NODE_RANK} \
-    --master_addr=${MASTER_ADDR} \
-    --master_port=${MASTER_PORT} \
-    -m ${SCRIPT}
+torchrun --nproc_per_node=$N_PROCS_PER_NODE --nnodes=$NNODES --node_rank=$NODE_RANK --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT \
+    -m src.train_ddp \
+    --d_model=512 \
+    --n_layers=4 \
+    --n_heads=8 \
+    --batch_size=16 \
+    --learning_rate=3e-4 \
+    --num_epochs=150 \
+    --seq_len=256
 
 echo "Training script finished."

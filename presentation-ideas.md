@@ -1,4 +1,4 @@
-Here are **10 eye-catching ways to *show* your text-generation project instead of just telling**. Pick whichever fit your style (or combine a few) to turn a basic demo into a recruiter-stopping reel.
+Here are **10 eye-catching ways to *show* your text-generation project instead of just telling**. 
 
 | #      | Visual Hook                                         | What the Viewer Actually Sees                                                                                                             | What It Quietly Demonstrates About *You*                                               |
 | ------ | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
