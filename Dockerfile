@@ -1,6 +1,6 @@
 # Use an official NVIDIA PyTorch image as a parent image.
 # This includes CUDA, cuDNN, and PyTorch.
-FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
 # Set the working directory in the container.
 WORKDIR /app
