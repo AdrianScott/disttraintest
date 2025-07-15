@@ -1,6 +1,6 @@
 # Use an official NVIDIA PyTorch image as a parent image.
 # This includes CUDA, cuDNN, and PyTorch.
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn8-runtime
 
 # Set the working directory in the container.
 WORKDIR /app
