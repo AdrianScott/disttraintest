@@ -21,27 +21,45 @@ MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 # A free port on the master node for communication.
 MASTER_PORT=${MASTER_PORT:-29500}
 
-# The Python script to execute
-# We use the module (-m) flag to ensure correct imports
-SCRIPT="src.train_ddp"
+# The Python module to execute
+SCRIPT_MODULE="src.train_ddp"
+
+# --- DDP/NCCL Debugging ---
+# For hangs or other network-related issues, uncommenting these can be helpful.
+# export NCCL_DEBUG=INFO
+# export TORCH_DISTRIBUTED_DEBUG=DETAIL
+
+# Set the network interface for NCCL. This is crucial for multi-node training
+# in containerized environments like Runpod or AWS.
+#
+# How to find the right interface name:
+# 1. Run `ip addr` or `ifconfig` on your pod/machine.
+# 2. Look for the interface with your main private IP address (e.g., starts with 10.x.x.x).
+#    Common names are `eth0`, `ens5`, `eno1`, or `ib0` for InfiniBand.
+#
+# The following command attempts to find it automatically, but may not work in all environments.
+# If training hangs, manually set this to the correct interface name.
+IFNAME=$(ip -o -4 route show to default | awk '{print $5}')
+export NCCL_SOCKET_IFNAME=${IFNAME:-eth0}
+echo "Using network interface: $NCCL_SOCKET_IFNAME for NCCL."
+
+# In some cloud environments, direct GPU-to-GPU communication (P2P) over the network
+# is not well-supported and can cause hangs. Disabling it can sometimes resolve issues.
+# export NCCL_P2P_DISABLE=1
 
 # --- Validation ---
-if [ ! -f "${SCRIPT//.//}.py" ]; then
-    echo "Error: Training script ${SCRIPT//.//}.py not found."
+if [ ! -f "${SCRIPT_MODULE//.//}.py" ]; then
+    echo "Error: Training script ${SCRIPT_MODULE//.//}.py not found."
     exit 1
 fi
 
 # --- Execution ---
 echo "Starting DDP training..."
-
-# Set the network interface for NCCL. This is crucial for Docker/container environments.
-# We are choosing 'podnet1' based on the output of 'ip addr'.
-export NCCL_SOCKET_IFNAME=podnet1
-
+echo "NNODES: $NNODES, NODE_RANK: $NODE_RANK, MASTER_ADDR: $MASTER_ADDR, MASTER_PORT: $MASTER_PORT, N_PROCS_PER_NODE: $N_PROCS_PER_NODE"
 
 
 torchrun --nproc_per_node=$N_PROCS_PER_NODE --nnodes=$NNODES --node_rank=$NODE_RANK --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT \
-    -m src.train_ddp \
+    -m ${SCRIPT_MODULE} \
     --d_model=512 \
     --n_layers=4 \
     --n_heads=8 \

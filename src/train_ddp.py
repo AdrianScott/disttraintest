@@ -58,10 +58,33 @@ class TextDataset(Dataset):
         targets = torch.tensor(self.token_ids[start+1:end+1], dtype=torch.long)
         return inputs, targets
 
+def prepare_data(tokenizer, rank, world_size):
+    """Downloads, tokenizes, and caches the dataset to prevent redundant processing."""
+    CACHE_PATH = ARTIFACTS_DIR / "wikitext-2-raw-v1_train_token_ids.pt"
+
+    if rank == 0:
+        if CACHE_PATH.exists():
+            print(f"Tokenized data found at {CACHE_PATH}")
+        else:
+            print("Tokenized data not found. Downloading and tokenizing wikitext-2...")
+            wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+            all_text = " ".join([text for text in wikitext["text"] if text.strip()])
+            token_ids = tokenizer.encode(all_text).ids
+            torch.save(token_ids, CACHE_PATH)
+            print(f"Tokenized data saved to {CACHE_PATH}")
+
+    if world_size > 1:
+        dist.barrier()
+
+    token_ids = torch.load(CACHE_PATH, map_location='cpu')
+    return token_ids
+
 # --- DDP Setup ---
 def setup_ddp():
     """ Initializes the distributed process group. """
+    # Set the backend. NCCL is recommended for NVIDIA GPUs.
     dist.init_process_group(backend="nccl")
+    # Set the device for the current process.
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 def cleanup_ddp():
@@ -89,21 +112,20 @@ def train():
         print(f"DDP training started on {world_size} GPUs.")
         print(f"Run configuration: {config}")
 
-    # 2. Load Tokenizer
+    # 2. Load Tokenizer and Prepare Data
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
-
-    # 3. Load and Prepare Data
-    wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
-    all_text = " ".join([text for text in wikitext["text"] if text.strip()])
-    token_ids = tokenizer.encode(all_text).ids
-
+    token_ids = prepare_data(tokenizer, rank, world_size)
+    
     train_dataset = TextDataset(token_ids, args.seq_len)
-    train_sampler = DistributedSampler(train_dataset)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler, num_workers=2, pin_memory=True)
+    
+    if rank == 0:
+        print(f"Dataset prepared with {len(train_loader)} batches per GPU.")
 
     # 4. Model, Optimizer, Loss, Scheduler
     model = TinyGPT(VOCAB_SIZE, args.d_model, args.n_layers, args.n_heads, args.max_len).to(local_rank)
-        # We set find_unused_parameters=True because our model's forward pass
+    # We set find_unused_parameters=True because our model's forward pass
     # has logic for a KV cache that is not used during training. This prevents
     # DDP from hanging when it can't find gradients for those unused parameters.
     model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
@@ -113,14 +135,16 @@ def train():
     scheduler = CosineAnnealingLR(optimizer, T_max=len(train_loader) * args.num_epochs)
 
     # 5. Training Loop
+    if rank == 0:
+        last_log_time = time.time()
+        
     for epoch in range(args.num_epochs):
         train_sampler.set_epoch(epoch)
         epoch_loss = 0
-        start_time = time.time()
 
         for i, (inputs, targets) in enumerate(train_loader):
-            inputs = inputs.to(local_rank)
-            targets = targets.to(local_rank)
+            inputs = inputs.to(local_rank, non_blocking=True)
+            targets = targets.to(local_rank, non_blocking=True)
 
             optimizer.zero_grad()
             logits, _ = model(inputs) # model returns (logits, kv_cache)
@@ -132,12 +156,18 @@ def train():
             epoch_loss += loss.item()
 
             if i % 100 == 0 and rank == 0:
-                # Calculate throughput
-                end_time = time.time()
-                elapsed_time = end_time - start_time
-                tokens_processed = (i + 1) * args.batch_size * args.seq_len * world_size
-                throughput = tokens_processed / elapsed_time
-                wandb.log({"train_loss": loss.item(), "throughput_tokens_per_sec": throughput})
+                current_time = time.time()
+                elapsed_time = current_time - last_log_time
+                steps_since_last_log = 100 if i > 0 else 1
+                tokens_processed = steps_since_last_log * args.batch_size * args.seq_len * world_size
+                throughput = tokens_processed / elapsed_time if elapsed_time > 0 else 0
+                last_log_time = current_time
+
+                wandb.log({
+                    "train_loss": loss.item(), 
+                    "throughput_tokens_per_sec": throughput,
+                    "lr": scheduler.get_last_lr()[0]
+                })
                 print(f"Epoch [{epoch+1}/{args.num_epochs}], Step {i}, Loss: {loss.item():.4f}, Throughput: {throughput:.2f} tokens/sec")
 
         if rank == 0:

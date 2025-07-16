@@ -13,9 +13,9 @@ from src.model import TinyGPT
 # --- Configuration ---
 # Model params
 VOCAB_SIZE = 16_000 # Should match tokenizer
-D_MODEL = 256
+D_MODEL = 512
 N_LAYERS = 4
-N_HEADS = 4
+N_HEADS = 8
 MAX_LEN = 512
 
 # Training params
@@ -60,6 +60,7 @@ def train():
         "batch_size": BATCH_SIZE,
         "d_model": D_MODEL,
         "n_layers": N_LAYERS,
+        "n_heads": N_HEADS,
     })
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -97,7 +98,7 @@ def train():
             inputs, targets = inputs.to(device), targets.to(device)
 
             # Forward pass
-            logits = model(inputs)
+            logits, _ = model(inputs)
             # Reshape for loss calculation
             loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
 
@@ -107,7 +108,7 @@ def train():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Gradient clipping
             optimizer.step()
             scheduler.step()
-            
+
             if step % 100 == 0:
                 wandb.log({"loss": loss.item(), "lr": scheduler.get_last_lr()[0]})
                 print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Step [{step}], Loss: {loss.item():.4f}")
