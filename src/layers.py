@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 class CausalSelfAttention(nn.Module):
     """ A standard Causal Self-Attention module with KV Cache support. """
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, max_len: int = 512):
         super().__init__()
         assert d_model % n_heads == 0
         # Key, query, value projections for all heads, but in a batch
@@ -16,6 +16,9 @@ class CausalSelfAttention(nn.Module):
         self.resid_dropout = nn.Dropout(dropout)
         self.n_heads = n_heads
         self.d_model = d_model
+        # Causal mask to ensure that attention is only applied to the left in the input sequence
+        self.register_buffer("bias", torch.tril(torch.ones(max_len, max_len))
+                                     .view(1, 1, max_len, max_len))
 
     def forward(self, x, kv_cache=None):
         B, T, C = x.size() # Batch size, sequence length, embedding dimensionality (d_model)
@@ -33,14 +36,8 @@ class CausalSelfAttention(nn.Module):
             v = torch.cat((v_cache, v), dim=2)
         
         # Causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        # Flash attention is a more efficient implementation of this, but this is the classic version.
         att = (q @ k.transpose(-2, -1)) * (1.0 / k.size(-1)**0.5)
-        # The causal mask is applied here to prevent attending to future tokens
-        # This is only necessary for training. During generation, T=1, so no masking is needed.
-        if kv_cache is None: # Training mode
-            mask = torch.tril(torch.ones(T, T)).view(1, 1, T, T).to(x.device)
-            att = att.masked_fill(mask[:,:,:T,:T] == 0, float('-inf'))
-        
+        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
         y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -52,10 +49,10 @@ class CausalSelfAttention(nn.Module):
 
 class TransformerBlock(nn.Module):
     """ A standard Transformer block. """
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, max_len: int = 512):
         super().__init__()
         self.ln_1 = nn.LayerNorm(d_model)
-        self.attn = CausalSelfAttention(d_model, n_heads, dropout)
+        self.attn = CausalSelfAttention(d_model, n_heads, dropout, max_len=max_len)
         self.ln_2 = nn.LayerNorm(d_model)
         self.mlp = nn.Sequential(
             nn.Linear(d_model, 4 * d_model),

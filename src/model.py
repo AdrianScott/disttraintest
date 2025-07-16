@@ -15,7 +15,7 @@ class TinyGPT(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # Transformer blocks
-        self.layers = nn.ModuleList([TransformerBlock(d_model, n_heads, dropout) for _ in range(n_layers)])
+        self.layers = nn.ModuleList([TransformerBlock(d_model, n_heads, dropout, max_len=max_len) for _ in range(n_layers)])
         
         # Final layer norm and output head
         self.ln_f = nn.LayerNorm(d_model)
