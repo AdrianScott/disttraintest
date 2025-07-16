@@ -103,7 +103,10 @@ def train():
 
     # 4. Model, Optimizer, Loss, Scheduler
     model = TinyGPT(VOCAB_SIZE, args.d_model, args.n_layers, args.n_heads, args.max_len).to(local_rank)
-    model = DDP(model, device_ids=[local_rank])
+        # We set find_unused_parameters=True because our model's forward pass
+    # has logic for a KV cache that is not used during training. This prevents
+    # DDP from hanging when it can't find gradients for those unused parameters.
+    model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
     criterion = nn.CrossEntropyLoss()

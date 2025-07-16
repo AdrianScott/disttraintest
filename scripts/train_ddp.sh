@@ -34,6 +34,12 @@ fi
 # --- Execution ---
 echo "Starting DDP training..."
 
+# Set the network interface for NCCL. This is crucial for Docker/container environments.
+# We are choosing 'podnet1' based on the output of 'ip addr'.
+export NCCL_SOCKET_IFNAME=podnet1
+
+
+
 torchrun --nproc_per_node=$N_PROCS_PER_NODE --nnodes=$NNODES --node_rank=$NODE_RANK --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT \
     -m src.train_ddp \
     --d_model=512 \
