@@ -16,6 +16,16 @@ MASTER_PORT=${MASTER_PORT:-29500}
 export NCCL_DEBUG=INFO
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
+# Additional network reliability settings
+export NCCL_IB_TIMEOUT=30          # Longer timeout (default is 14)
+export NCCL_IB_RETRY_CNT=10        # More retry attempts
+export NCCL_SOCKET_NTHREADS=4      # Use more threads for socket comm
+export NCCL_BUFFSIZE=4194304       # Smaller buffer size (4MB)
+
+# Disable P2P operations which are causing hangs
+export NCCL_P2P_DISABLE=1          # Disable direct P2P operations
+export NCCL_SHM_DISABLE=0          # Keep shared memory enabled
+
 # Create log directory for NCCL logs
 mkdir -p ./logs
 

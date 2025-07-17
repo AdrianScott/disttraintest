@@ -51,6 +51,17 @@ export NCCL_DEBUG=INFO              # More verbose logging if something hangs
 export NCCL_DEBUG_FILE="${LOG_DIR}/nccl_${RUN_ID}_node${NODE_RANK}.log"  # Save NCCL logs to file
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # Better error reporting (new variable name)
 
+# Additional network reliability settings
+export NCCL_IB_TIMEOUT=30          # Longer timeout (default is 14)
+export NCCL_IB_RETRY_CNT=10        # More retry attempts
+export NCCL_SOCKET_NTHREADS=4      # Use more threads for socket comm
+export NCCL_BUFFSIZE=4194304       # Smaller buffer size (4MB)
+
+# Disable P2P operations which are causing hangs
+export NCCL_P2P_DISABLE=1          # Disable direct P2P operations
+export NCCL_SHM_DISABLE=0          # Keep shared memory enabled
+export NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME  # Ensure interface is consistent
+
 # Display network interfaces - useful for debugging
 echo "Available network interfaces:"
 ip -br addr | grep -v 'lo'

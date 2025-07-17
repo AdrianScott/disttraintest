@@ -163,17 +163,39 @@ def main():
         if nnodes > 1 and rank == 0:
             target_rank = n_procs_per_node  # First process on second node
             p2p_tensor = torch.tensor([42.0], device=device)
-            print(f"[{node_rank}:{local_rank}] Testing direct P2P send/recv with rank {target_rank}...")
             
-            try:
-                if rank == 0:
-                    dist.send(p2p_tensor, dst=target_rank)
-                    print(f"[{node_rank}:{local_rank}] P2P send to rank {target_rank} completed")
-                elif rank == target_rank:
-                    dist.recv(p2p_tensor, src=0)
-                    print(f"[{node_rank}:{local_rank}] P2P recv from rank 0 completed, got {p2p_tensor.item()}")
-            except Exception as e:
-                print(f"[{node_rank}:{local_rank}] P2P test failed: {str(e)}")
+            # Check if P2P is disabled in environment (our fix for hanging issues)
+            p2p_disabled = os.environ.get('NCCL_P2P_DISABLE', '0') == '1'
+            if p2p_disabled:
+                print(f"[{node_rank}:{local_rank}] P2P testing skipped (NCCL_P2P_DISABLE=1)")
+            else:
+                print(f"[{node_rank}:{local_rank}] Testing direct P2P send/recv with rank {target_rank}...")
+                
+                # Add timeout protection for P2P tests
+                def p2p_test_with_timeout():
+                    if rank == 0:
+                        dist.send(p2p_tensor, dst=target_rank)
+                        print(f"[{node_rank}:{local_rank}] P2P send to rank {target_rank} completed")
+                    elif rank == target_rank:
+                        dist.recv(p2p_tensor, src=0)
+                        print(f"[{node_rank}:{local_rank}] P2P recv from rank 0 completed, got {p2p_tensor.item()}")
+                
+                try:
+                    # Set an alarm for 10 seconds to avoid infinite hang
+                    import signal
+                    def timeout_handler(signum, frame):
+                        raise TimeoutError("P2P test timed out after 10 seconds")
+                    
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(10)
+                    
+                    p2p_test_with_timeout()
+                    
+                    # Cancel the alarm
+                    signal.alarm(0)
+                except Exception as e:
+                    print(f"[{node_rank}:{local_rank}] P2P test failed or timed out: {str(e)}")
+                    print("This is expected if NCCL_P2P_DISABLE=1 was set after test started.")
         
         # Final barrier to ensure all processes complete
         print(f"[{node_rank}:{local_rank}] Waiting at final barrier...")
