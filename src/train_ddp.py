@@ -215,7 +215,7 @@ def train():
 
     # Wait for all processes to finish initialization with timeout
     try:
-        dist.monitored_barrier(timeout=datetime.timedelta(seconds=30))
+        dist.barrier()
         if rank == 0:
             print("Initialization barrier completed successfully")
     except Exception as e:
@@ -326,7 +326,7 @@ def train():
         barrier_start = time.time()
         try:
             # Specify device ID to avoid warnings and add timeout
-            dist.monitored_barrier(timeout=datetime.timedelta(seconds=60))
+            dist.barrier()
             barrier_time = time.time() - barrier_start
             if rank == 0:
                 print(f"Synchronization barrier completed in {barrier_time:.3f}s")
@@ -353,7 +353,7 @@ def train():
     # 6. Final Cleanup
     # Specify device ID to avoid warnings and add timeout
     try:
-        dist.monitored_barrier(timeout=datetime.timedelta(seconds=30))  # Ensure all processes reach this point
+        dist.barrier()  # Ensure all processes reach this point
         if rank == 0:
             print("Final synchronization barrier completed successfully")
     except Exception as e:
