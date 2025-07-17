@@ -140,10 +140,8 @@ def cleanup_ddp():
     dist.destroy_process_group()
 
 # --- Main Training Logic ---
-def train():
+def train(args):
     """ Main function to run the DDP training loop. """
-    args = get_args()
-
     # Get basic process information
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     rank = int(os.environ.get("RANK", "0"))
@@ -267,7 +265,7 @@ def train():
                 loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
                 
                 # Scale loss by accumulation steps to maintain correct gradients
-                loss = loss / gradient_accumulation_steps
+                loss = loss / args.gradient_accumulation_steps
 
                 # Backward pass
                 try:
@@ -278,16 +276,16 @@ def train():
                     sys.exit(1)
 
                 # Track loss (unscaled for logging)
-                epoch_loss += loss.item() * gradient_accumulation_steps
+                epoch_loss += loss.item() * args.gradient_accumulation_steps
 
                 # Count tokens processed
                 tokens_processed += inputs.numel()
                 
                 # Only step optimizer every N accumulation steps
-                if (i + 1) % gradient_accumulation_steps == 0:
+                if (i + 1) % args.gradient_accumulation_steps == 0 or (i + 1) == len(train_loader):
                     # Log when we're doing communication
                     if rank == 0:
-                        print(f"Rank {rank}: Performing optimizer step after {gradient_accumulation_steps} batches of gradient accumulation")
+                        print(f"Rank {rank}: Performing optimizer step after gradient accumulation (batch {i+1})")
                     
                     # Optimize
                     optimizer.step()
@@ -330,9 +328,9 @@ def train():
                         num_nodes = 1
                     
                     # Add gradient accumulation info to logging
-                    effective_batch_size = args.batch_size * gradient_accumulation_steps * world_size
+                    effective_batch_size = args.batch_size * args.gradient_accumulation_steps * world_size
                     print(f"Total System Throughput: {total_system_throughput:.2f} tokens/sec ({world_size} GPUs across {num_nodes} node{'s' if num_nodes > 1 else ''})")
-                    print(f"Gradient Accumulation: {gradient_accumulation_steps} steps (effective batch size: {effective_batch_size})")
+                    print(f"Gradient Accumulation: {args.gradient_accumulation_steps} steps (effective batch size: {effective_batch_size})")
 
 
 
@@ -395,4 +393,6 @@ def train():
     cleanup_ddp()
 
 if __name__ == "__main__":
-    train()
+    args = get_args()
+    print(f"Starting training with gradient_accumulation_steps={args.gradient_accumulation_steps}")
+    train(args)
