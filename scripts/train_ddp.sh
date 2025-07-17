@@ -80,11 +80,7 @@ if [[ "$NNODES" -gt 1 ]]; then
     # Test network connectivity between nodes if this isn't the master node
     if [[ "$NODE_RANK" -gt 0 ]]; then
         echo "Testing connectivity to master node ($MASTER_ADDR)..."
-        if ping -c 1 -W 2 $MASTER_ADDR > /dev/null; then
-            echo "✓ Successfully ping to master node"
-        else
-            echo "✗ WARNING: Cannot ping master node! This may cause DDP initialization to fail."
-        fi
+
     fi
 else
     echo "Single-node training with $N_PROCS_PER_NODE processes"

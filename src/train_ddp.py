@@ -12,8 +12,6 @@ import wandb
 import os
 import sys
 import time
-import json
-import random
 import datetime
 import argparse
 from src.model import TinyGPT
@@ -69,18 +67,18 @@ def setup_ddp(rank, world_size, args):
     try:
         local_rank = rank % args.n_processes_per_node
         node_rank = rank // args.n_processes_per_node
-        
+
         print(f"Setting up DDP: Global rank {rank}, Node {node_rank}, Local rank {local_rank}, World size {world_size}")
-        
+
         # Log NCCL configuration from environment
         nccl_socket_ifname = os.environ.get("NCCL_SOCKET_IFNAME", "not set")
         nccl_debug = os.environ.get("NCCL_DEBUG", "not set")
         print(f"Rank {rank}: NCCL config: SOCKET_IFNAME={nccl_socket_ifname}, DEBUG={nccl_debug}")
-        
+
         # Set device before initializing process group
         torch.cuda.set_device(local_rank)
         print(f"Rank {rank}: Set CUDA device to: {local_rank} (GPU {torch.cuda.current_device()})")
-        
+
         # Initialize with extended timeout for multi-node
         print(f"Rank {rank}: Initializing process group with timeout={torch.distributed.constants.default_pg_timeout * 3}s")
         dist.init_process_group(
@@ -89,12 +87,12 @@ def setup_ddp(rank, world_size, args):
             # Extend default timeout for multi-node
             timeout=torch.distributed.constants.default_pg_timeout * 3
         )
-        
+
         # Get master address from environment
         master_addr = os.environ.get("MASTER_ADDR", "unknown")
         master_port = os.environ.get("MASTER_PORT", "unknown")
         print(f"Rank {rank}: Connected to process group. Master: {master_addr}:{master_port}")
-        
+
         return rank, world_size
     except Exception as e:
         print(f"Failed to initialize process group: {str(e)}")
@@ -105,38 +103,35 @@ def test_communication(local_rank, world_size):
     rank = dist.get_rank()
     local_world_size = torch.cuda.device_count()
     node_rank = rank // local_world_size
-    
+
     print(f"Rank {rank}: Starting communication test (Node {node_rank}, Local rank {local_rank})")
-    
+
     # First test: basic all-reduce with small tensor
     print(f"Rank {rank}: Testing basic all-reduce...")
     tensor = torch.ones(1, device=f"cuda:{local_rank}") * (rank + 1)  # Different value per rank
     original_value = tensor.item()
-    
+
     # Time the all-reduce operation
     start_time = time.time()
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     torch.cuda.synchronize()
     duration = time.time() - start_time
-    
+
     # Expected sum is sum of 1+2+3+...+world_size = world_size*(world_size+1)/2
     expected = world_size * (world_size + 1) / 2
     passed = abs(tensor.item() - expected) < 1e-3
-    
-    print(f"Rank {rank}: Communication test {'passed' if passed else 'FAILED'} - "  
-          f"sent {original_value}, got {tensor.item():.1f}, expected {expected:.1f}, "  
+
+    print(f"Rank {rank}: Communication test {'passed' if passed else 'FAILED'} - "
+          f"sent {original_value}, got {tensor.item():.1f}, expected {expected:.1f}, "
           f"took {duration*1000:.2f}ms")
-    
-    # Skip bandwidth test entirely - it's causing connection failures
-    # Even with P2P disabled and smaller tensors
-    
+
     # Use barrier to ensure all processes complete tests
     # Specify device ID to avoid warnings
     dist.barrier(device_ids=[local_rank])
-    
+
     if rank == 0:
         print(f"All {world_size} processes completed communication tests")
-        
+
     return passed
 
 def cleanup_ddp():
@@ -147,15 +142,15 @@ def cleanup_ddp():
 def train():
     """ Main function to run the DDP training loop. """
     args = get_args()
-    
+
     # Get basic process information
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    
+
     # Set up distributed process group with enhanced logging
     rank, world_size = setup_ddp(rank, world_size, args)
-    
+
     # Run communication test to verify multi-node setup
     print(f"Rank {rank}: Beginning communication test...")
     if test_communication(local_rank, world_size):
@@ -190,7 +185,7 @@ def train():
     wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
     all_text = " ".join([text for text in wikitext["text"] if text.strip()])
     token_ids = tokenizer.encode(all_text).ids
-    
+
     if rank == 0:
         print(f"Tokenized dataset with {len(token_ids)} tokens")
     # Specify device ID to avoid warnings
@@ -199,10 +194,10 @@ def train():
     train_dataset = TextDataset(token_ids, args.seq_len)
     if rank % 8 == 0:  # Print from a subset of ranks
         print(f"Rank {rank}: Dataset has {len(train_dataset)} samples")
-        
+
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
     train_loader = DataLoader(
-        train_dataset, 
+        train_dataset,
         batch_size=args.batch_size,
         sampler=train_sampler,
         num_workers=4,          # Speed up host-to-GPU pipeline
@@ -217,10 +212,10 @@ def train():
     # Remove find_unused_parameters as it's causing overhead and warnings
     # The model doesn't actually have unused parameters in the forward pass
     model = DDP(model, device_ids=[local_rank])
-    
+
     # Wait for all processes to finish initialization with timeout
     try:
-        dist.barrier(device_ids=[local_rank], timeout=datetime.timedelta(seconds=30))
+        dist.monitored_barrier(timeout=datetime.timedelta(seconds=30))
         if rank == 0:
             print("Initialization barrier completed successfully")
     except Exception as e:
@@ -238,21 +233,21 @@ def train():
         train_sampler.set_epoch(epoch)  # Important for proper shuffling in multi-node
         epoch_loss = 0
         start_time = time.time()
-        
+
         if rank == 0:
             print(f"\n===== Starting epoch {epoch+1}/{args.num_epochs} =====")
 
         for i, (inputs, targets) in enumerate(train_loader):
             # Add step timing for debugging
             step_start = time.time()
-            
+
             inputs = inputs.to(local_rank)
             targets = targets.to(local_rank)
 
             # Log for debugging
             if i == 0 and (rank == 0 or rank % 8 == 0):
                 print(f"Rank {rank}: Starting batch with shape {inputs.shape}")
-                
+
             # Clear gradients
             optimizer.zero_grad()
 
@@ -263,10 +258,10 @@ def train():
                 print(f"Rank {rank}: Forward pass failed with error: {str(e)}")
                 cleanup_ddp()
                 sys.exit(1)
-                
+
             # Calculate loss
             loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
-            
+
             # Backward pass
             try:
                 loss.backward()
@@ -274,24 +269,24 @@ def train():
                 print(f"Rank {rank}: Backward pass failed with error: {str(e)}")
                 cleanup_ddp()
                 sys.exit(1)
-                
+
             # Optimize
             optimizer.step()
             scheduler.step()
 
             # Track loss
             epoch_loss += loss.item()
-            
+
             # Periodically log progress with detailed timing breakdown
             if i % 100 == 0 and (rank == 0 or rank % 8 == 0):
                 step_time = time.time() - step_start
                 local_world_size = torch.cuda.device_count()
                 node_rank = rank // local_world_size
-                
+
                 print(f"Rank {rank} (Node {node_rank}, Local {rank % local_world_size}): "
                       f"Epoch {epoch+1}/{args.num_epochs}, Step {i}, Loss: {loss.item():.4f}, "
                       f"Step time: {step_time:.3f}s")
-                
+
                 # Skip periodic communication check - it causes hangs in multi-node setup
                 # Communication during training happens naturally through gradients
 
@@ -301,12 +296,12 @@ def train():
                 end_time = time.time()
                 elapsed_time = end_time - start_time
                 tokens_processed = (i + 1) * args.batch_size * args.seq_len * world_size
-                
+
                 # Print GPU memory stats
                 gpu_mem_alloc = torch.cuda.max_memory_allocated(device=local_rank) / 1024**3
                 gpu_mem_res = torch.cuda.max_memory_reserved(device=local_rank) / 1024**3
                 print(f"GPU Memory: {gpu_mem_alloc:.2f}GB allocated, {gpu_mem_res:.2f}GB reserved")
-                
+
                 # Print NCCL stats if available
                 if os.environ.get("NCCL_DEBUG", "") == "INFO":
                     print(f"Check NCCL INFO logs for communication details")
@@ -317,21 +312,21 @@ def train():
         # Collect timing stats at end of epoch
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - start_time
-        
+
         # Log per-node statistics
         local_world_size = torch.cuda.device_count()
         node_rank = rank // local_world_size
         node_local_rank = rank % local_world_size
-        
+
         # Aggregate stats from different nodes - log from first process on each node
         if node_local_rank == 0:
             print(f"Node {node_rank}: Completed epoch {epoch+1} in {epoch_duration:.2f}s")
-        
+
         # Wait for all processes to finish epoch with timeout protection
         barrier_start = time.time()
         try:
             # Specify device ID to avoid warnings and add timeout
-            dist.barrier(device_ids=[local_rank], timeout=datetime.timedelta(seconds=60))
+            dist.monitored_barrier(timeout=datetime.timedelta(seconds=60))
             barrier_time = time.time() - barrier_start
             if rank == 0:
                 print(f"Synchronization barrier completed in {barrier_time:.3f}s")
@@ -341,7 +336,7 @@ def train():
             print(f"Rank {rank}: Warning: Barrier timed out after {barrier_time:.3f}s: {str(e)}")
             print(f"Rank {rank}: Continuing training despite barrier timeout...")
             # This allows training to continue even if one node has issues
-        
+
         # Log barrier time from rank 0 (useful to detect stragglers)
         if rank == 0:
             print(f"Synchronization barrier took {barrier_time:.3f}s")
@@ -358,13 +353,13 @@ def train():
     # 6. Final Cleanup
     # Specify device ID to avoid warnings and add timeout
     try:
-        dist.barrier(device_ids=[local_rank], timeout=datetime.timedelta(seconds=30))  # Ensure all processes reach this point
+        dist.monitored_barrier(timeout=datetime.timedelta(seconds=30))  # Ensure all processes reach this point
         if rank == 0:
             print("Final synchronization barrier completed successfully")
     except Exception as e:
         print(f"Rank {rank}: Final barrier timed out or failed: {str(e)}")
         # Continue cleanup anyway
-    
+
     if rank == 0:
         final_model_path = CHECKPOINT_DIR / "model_final.pt"
         torch.save(model.module.state_dict(), final_model_path)
