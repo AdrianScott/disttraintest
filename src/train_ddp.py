@@ -126,8 +126,7 @@ def test_communication(local_rank, world_size):
           f"took {duration*1000:.2f}ms")
 
     # Use barrier to ensure all processes complete tests
-    # Specify device ID to avoid warnings
-    dist.barrier(device_ids=[local_rank])
+    dist.barrier()
 
     if rank == 0:
         print(f"All {world_size} processes completed communication tests")
@@ -177,8 +176,7 @@ def train():
     # 2. Load Tokenizer
     print(f"Rank {rank}: Loading tokenizer...")
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
-    # Specify device ID to avoid warnings
-    dist.barrier(device_ids=[local_rank])  # Ensure all processes have loaded the tokenizer
+    # Remove barrier here - not needed for tokenizer loading
 
     # 3. Load and Prepare Data
     print(f"Rank {rank}: Loading and tokenizing dataset...")
@@ -188,8 +186,7 @@ def train():
 
     if rank == 0:
         print(f"Tokenized dataset with {len(token_ids)} tokens")
-    # Specify device ID to avoid warnings
-    dist.barrier(device_ids=[local_rank])  # Synchronize after data loading
+    # Remove barrier here - not needed for data loading
 
     train_dataset = TextDataset(token_ids, args.seq_len)
     if rank % 8 == 0:  # Print from a subset of ranks
