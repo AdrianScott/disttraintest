@@ -200,9 +200,9 @@ def train():
         train_dataset,
         batch_size=args.batch_size,
         sampler=train_sampler,
-        num_workers=4,          # Speed up host-to-GPU pipeline
+        num_workers=0,          # Use 0 for multi-node DDP to avoid multiprocessing issues
         pin_memory=True,
-        persistent_workers=True # Avoid worker respawn each epoch
+        persistent_workers=False # Disable since num_workers=0
     )
     print(f"Rank {rank}: DataLoader initialized with {len(train_loader)} batches")
 
