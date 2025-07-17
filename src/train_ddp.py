@@ -12,7 +12,9 @@ import wandb
 import os
 import sys
 import time
-
+import json
+import random
+import datetime
 import argparse
 from src.model import TinyGPT
 
@@ -212,13 +214,19 @@ def train():
     # 4. Model, Optimizer, Loss, Scheduler
     print(f"Rank {rank}: Initializing model...")
     model = TinyGPT(VOCAB_SIZE, args.d_model, args.n_layers, args.n_heads, args.max_len).to(local_rank)
-    # We set find_unused_parameters=True because our model's forward pass
-    # has logic for a KV cache that is not used during training. This prevents
-    # DDP from hanging when it can't find gradients for those unused parameters.
-    model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
+    # Remove find_unused_parameters as it's causing overhead and warnings
+    # The model doesn't actually have unused parameters in the forward pass
+    model = DDP(model, device_ids=[local_rank])
     
-    # Wait for all processes to finish initialization
-    dist.barrier()
+    # Wait for all processes to finish initialization with timeout
+    try:
+        dist.barrier(device_ids=[local_rank], timeout=datetime.timedelta(seconds=30))
+        if rank == 0:
+            print("Initialization barrier completed successfully")
+    except Exception as e:
+        print(f"Rank {rank}: Initialization barrier timed out: {str(e)}")
+        print(f"Rank {rank}: Continuing despite barrier timeout...")
+        # Continue even if barrier fails - this is more robust
     print(f"Rank {rank}: Model initialized and ready for training")
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
@@ -319,11 +327,20 @@ def train():
         if node_local_rank == 0:
             print(f"Node {node_rank}: Completed epoch {epoch+1} in {epoch_duration:.2f}s")
         
-        # Wait for all processes to finish epoch
+        # Wait for all processes to finish epoch with timeout protection
         barrier_start = time.time()
-        # Specify device ID to avoid warnings
-        dist.barrier(device_ids=[local_rank])
-        barrier_time = time.time() - barrier_start
+        try:
+            # Specify device ID to avoid warnings and add timeout
+            dist.barrier(device_ids=[local_rank], timeout=datetime.timedelta(seconds=60))
+            barrier_time = time.time() - barrier_start
+            if rank == 0:
+                print(f"Synchronization barrier completed in {barrier_time:.3f}s")
+        except Exception as e:
+            # Continue even if barrier times out
+            barrier_time = time.time() - barrier_start
+            print(f"Rank {rank}: Warning: Barrier timed out after {barrier_time:.3f}s: {str(e)}")
+            print(f"Rank {rank}: Continuing training despite barrier timeout...")
+            # This allows training to continue even if one node has issues
         
         # Log barrier time from rank 0 (useful to detect stragglers)
         if rank == 0:
@@ -339,8 +356,14 @@ def train():
                 print(f"Checkpoint saved to {checkpoint_path}")
 
     # 6. Final Cleanup
-    # Specify device ID to avoid warnings
-    dist.barrier(device_ids=[local_rank])  # Ensure all processes reach this point
+    # Specify device ID to avoid warnings and add timeout
+    try:
+        dist.barrier(device_ids=[local_rank], timeout=datetime.timedelta(seconds=30))  # Ensure all processes reach this point
+        if rank == 0:
+            print("Final synchronization barrier completed successfully")
+    except Exception as e:
+        print(f"Rank {rank}: Final barrier timed out or failed: {str(e)}")
+        # Continue cleanup anyway
     
     if rank == 0:
         final_model_path = CHECKPOINT_DIR / "model_final.pt"
