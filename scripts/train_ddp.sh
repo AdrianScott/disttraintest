@@ -104,7 +104,7 @@ torchrun --nproc_per_node=$N_PROCS_PER_NODE --nnodes=$NNODES --node_rank=$NODE_R
     --n_heads=8 \
     --batch_size=16 \
     --learning_rate=3e-4 \
-    --num_epochs=150 \
+    --num_epochs=10 \
     --n_processes_per_node=$N_PROCS_PER_NODE \
     --seq_len=256
 
