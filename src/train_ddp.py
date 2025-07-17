@@ -38,6 +38,8 @@ def get_args():
     parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=150, help="Number of training epochs")
     parser.add_argument("--seq_len", type=int, default=256, help="Sequence length for training")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4, 
+                        help="Number of steps to accumulate gradients before optimizer step")
     # W&B
     parser.add_argument("--wandb_project", type=str, default="tiny-transformer-from-scratch-ddp", help="WandB project name")
     # DDP specific
@@ -241,6 +243,9 @@ def train():
             print(f"Rank {rank}: Starting epoch {epoch+1}/{args.num_epochs}")
             train_sampler.set_epoch(epoch)  # Important for proper shuffling in multi-node
 
+            # Zero gradients at the beginning of epoch
+            optimizer.zero_grad()
+            
             for i, (inputs, targets) in enumerate(train_loader):
                 print(f"Rank {rank}: Fetched batch {i}")
                 inputs = inputs.to(local_rank)
@@ -249,9 +254,6 @@ def train():
                 # Log for debugging
                 if i == 0 and (rank == 0 or rank % 8 == 0):
                     print(f"Rank {rank}: Starting batch with shape {inputs.shape}")
-
-                # Clear gradients
-                optimizer.zero_grad()
 
                 # Forward pass
                 try:
@@ -263,6 +265,9 @@ def train():
 
                 # Calculate loss
                 loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
+                
+                # Scale loss by accumulation steps to maintain correct gradients
+                loss = loss / gradient_accumulation_steps
 
                 # Backward pass
                 try:
@@ -272,15 +277,24 @@ def train():
                     cleanup_ddp()
                     sys.exit(1)
 
-                # Optimize
-                optimizer.step()
-                scheduler.step()
-
-                # Track loss
-                epoch_loss += loss.item()
+                # Track loss (unscaled for logging)
+                epoch_loss += loss.item() * gradient_accumulation_steps
 
                 # Count tokens processed
                 tokens_processed += inputs.numel()
+                
+                # Only step optimizer every N accumulation steps
+                if (i + 1) % gradient_accumulation_steps == 0:
+                    # Log when we're doing communication
+                    if rank == 0:
+                        print(f"Rank {rank}: Performing optimizer step after {gradient_accumulation_steps} batches of gradient accumulation")
+                    
+                    # Optimize
+                    optimizer.step()
+                    scheduler.step()
+                    
+                    # Clear gradients after stepping
+                    optimizer.zero_grad()
 
                 # Step timing
                 elapsed_time = time.time() - start_time
@@ -314,8 +328,12 @@ def train():
                         num_nodes = int(os.environ.get("NNODES", "1"))  # Default to 1 if not set
                     except ValueError:
                         num_nodes = 1
-                        
+                    
+                    # Add gradient accumulation info to logging
+                    effective_batch_size = args.batch_size * gradient_accumulation_steps * world_size
                     print(f"Total System Throughput: {total_system_throughput:.2f} tokens/sec ({world_size} GPUs across {num_nodes} node{'s' if num_nodes > 1 else ''})")
+                    print(f"Gradient Accumulation: {gradient_accumulation_steps} steps (effective batch size: {effective_batch_size})")
+
 
 
             # Collect timing stats at end of epoch
