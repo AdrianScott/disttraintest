@@ -294,9 +294,21 @@ def train():
                     print(f"GPU Memory: {gpu_mem_alloc:.2f}GB allocated, {gpu_mem_res:.2f}GB reserved")
                     if os.environ.get("NCCL_DEBUG", "") == "INFO":
                         print(f"Check NCCL INFO logs for communication details")
-                    throughput = tokens_processed / elapsed_time
-                    wandb.log({"train_loss": loss.item(), "throughput_tokens_per_sec": throughput})
-                    print(f"Epoch [{epoch+1}/{args.num_epochs}], Step {i}, Loss: {loss.item():.4f}, Throughput: {throughput:.2f} tokens/sec")
+                    
+                    # Calculate per-GPU throughput (this GPU only)
+                    per_gpu_throughput = tokens_processed / elapsed_time
+                    
+                    # Calculate total system throughput (all GPUs across all nodes)
+                    total_system_throughput = per_gpu_throughput * world_size
+                    
+                    wandb.log({
+                        "train_loss": loss.item(), 
+                        "per_gpu_throughput": per_gpu_throughput,
+                        "total_system_throughput": total_system_throughput
+                    })
+                    print(f"Epoch [{epoch+1}/{args.num_epochs}], Step {i}, Loss: {loss.item():.4f}")
+                    print(f"Node 0 GPU 0 Throughput: {per_gpu_throughput:.2f} tokens/sec")
+                    print(f"Total System Throughput: {total_system_throughput:.2f} tokens/sec ({world_size} GPUs across 2 nodes)")
 
             # Collect timing stats at end of epoch
             epoch_end_time = time.time()

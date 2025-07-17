@@ -55,7 +55,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # Better error reporting (new variable
 export NCCL_IB_TIMEOUT=30          # Longer timeout (default is 14)
 export NCCL_IB_RETRY_CNT=10        # More retry attempts
 export NCCL_SOCKET_NTHREADS=4      # Use more threads for socket comm
-export NCCL_BUFFSIZE=4194304       # Smaller buffer size (4MB)
+export NCCL_BUFFSIZE=8388608     # Smaller buffer size (4MB)
 
 # Disable P2P operations which are causing hangs
 export NCCL_P2P_DISABLE=1          # Disable direct P2P operations
@@ -102,7 +102,7 @@ torchrun --nproc_per_node=$N_PROCS_PER_NODE --nnodes=$NNODES --node_rank=$NODE_R
     --d_model=512 \
     --n_layers=4 \
     --n_heads=8 \
-    --batch_size=16 \
+    --batch_size=32 \
     --learning_rate=3e-4 \
     --num_epochs=10 \
     --n_processes_per_node=$N_PROCS_PER_NODE \
