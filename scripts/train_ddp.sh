@@ -70,25 +70,25 @@ ip -br addr | grep -v 'lo'
 if [[ "$NNODES" -gt 1 ]]; then
     echo "Multi-node training detected: $NNODES nodes"
     echo "MASTER_ADDR=$MASTER_ADDR, MASTER_PORT=$MASTER_PORT"
-    
+
     # Use existing env var if set, otherwise default to eth1 for multi-node
     if [[ -z "$NCCL_SOCKET_IFNAME" ]]; then
         export NCCL_SOCKET_IFNAME=eth1
     fi
     echo "NCCL using network interface: $NCCL_SOCKET_IFNAME"
-    
+
     # Test network connectivity between nodes if this isn't the master node
     if [[ "$NODE_RANK" -gt 0 ]]; then
         echo "Testing connectivity to master node ($MASTER_ADDR)..."
         if ping -c 1 -W 2 $MASTER_ADDR > /dev/null; then
-            echo "✓ Successfully connected to master node"
+            echo "✓ Successfully ping to master node"
         else
             echo "✗ WARNING: Cannot ping master node! This may cause DDP initialization to fail."
         fi
     fi
 else
     echo "Single-node training with $N_PROCS_PER_NODE processes"
-    
+
     # Use existing env var if set, otherwise default to a reasonable interface for local training
     if [[ -z "$NCCL_SOCKET_IFNAME" ]]; then
         # Try to find a suitable interface
