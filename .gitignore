@@ -48,6 +48,19 @@ bienv/
 .conda
 env/
 venv/
+
+# Logs and debugging
+logs/
+*.log
+
+# Model checkpoints and artifacts
+checkpoints/
+artifacts/
+model_outputs/
+
+# Wandb
+wandb/
+.wandb/
 ENV/
 env.bak/
 venv.bak/
