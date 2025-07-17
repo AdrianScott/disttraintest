@@ -284,15 +284,8 @@ def train():
                       f"Epoch {epoch+1}/{args.num_epochs}, Step {i}, Loss: {loss.item():.4f}, "
                       f"Step time: {step_time:.3f}s")
                 
-                # Every 100 steps, perform a quick communication check from a subset of ranks
-                if i % 100 == 0 and (rank == 0 or rank == world_size // 2):
-                    print(f"Rank {rank}: Performing quick comm check during training...")
-                    comm_start = time.time()
-                    test_tensor = torch.ones(1, device=f"cuda:{local_rank}") * rank
-                    dist.all_reduce(test_tensor)
-                    torch.cuda.synchronize()
-                    comm_time = time.time() - comm_start
-                    print(f"Rank {rank}: Comm check completed in {comm_time*1000:.2f}ms, value: {test_tensor.item()}")
+                # Skip periodic communication check - it causes hangs in multi-node setup
+                # Communication during training happens naturally through gradients
 
             # More comprehensive logging from rank 0
             if i % 100 == 0 and rank == 0:
