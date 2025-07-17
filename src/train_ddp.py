@@ -229,126 +229,117 @@ def train():
     scheduler = CosineAnnealingLR(optimizer, T_max=len(train_loader) * args.num_epochs)
 
     # 5. Training Loop
-    for epoch in range(args.num_epochs):
-        train_sampler.set_epoch(epoch)  # Important for proper shuffling in multi-node
-        epoch_loss = 0
-        start_time = time.time()
+    # Calculate node information once for consistent logging
+    local_world_size = torch.cuda.device_count()
+    node_rank = rank // local_world_size
+    node_local_rank = rank % local_world_size
+    
+    try:
+        for epoch in range(args.num_epochs):
+            model.train()
+            epoch_loss = 0.0
+            tokens_processed = 0
+            start_time = time.time()
 
-        if rank == 0:
-            print(f"\n===== Starting epoch {epoch+1}/{args.num_epochs} =====")
+            print(f"Rank {rank}: Starting epoch {epoch+1}/{args.num_epochs}")
+            train_sampler.set_epoch(epoch)  # Important for proper shuffling in multi-node
 
-        for i, (inputs, targets) in enumerate(train_loader):
-            # Add step timing for debugging
-            step_start = time.time()
+            for i, (inputs, targets) in enumerate(train_loader):
+                print(f"Rank {rank}: Fetched batch {i}")
+                inputs = inputs.to(local_rank)
+                targets = targets.to(local_rank)
 
-            inputs = inputs.to(local_rank)
-            targets = targets.to(local_rank)
+                # Log for debugging
+                if i == 0 and (rank == 0 or rank % 8 == 0):
+                    print(f"Rank {rank}: Starting batch with shape {inputs.shape}")
 
-            # Log for debugging
-            if i == 0 and (rank == 0 or rank % 8 == 0):
-                print(f"Rank {rank}: Starting batch with shape {inputs.shape}")
+                # Clear gradients
+                optimizer.zero_grad()
 
-            # Clear gradients
-            optimizer.zero_grad()
+                # Forward pass
+                try:
+                    logits, _ = model(inputs)  # model returns (logits, kv_cache)
+                except Exception as e:
+                    print(f"Rank {rank}: Forward pass failed with error: {str(e)}")
+                    cleanup_ddp()
+                    sys.exit(1)
 
-            # Forward pass
+                # Calculate loss
+                loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
+
+                # Backward pass
+                try:
+                    loss.backward()
+                except Exception as e:
+                    print(f"Rank {rank}: Backward pass failed with error: {str(e)}")
+                    cleanup_ddp()
+                    sys.exit(1)
+
+                # Optimize
+                optimizer.step()
+                scheduler.step()
+
+                # Track loss
+                epoch_loss += loss.item()
+
+                # Count tokens processed
+                tokens_processed += inputs.numel()
+
+                # Step timing
+                elapsed_time = time.time() - start_time
+                step_time = elapsed_time / (i + 1)
+
+                # Print batch stats
+                if i % 10 == 0 and rank == 0:
+                    print(f"Rank {rank} (Node {node_rank}, Local {local_rank}): Epoch {epoch+1}/{args.num_epochs}, Step {i}, Loss: {loss.item():.4f}, Step time: {step_time:.2f}s")
+                    gpu_mem_alloc = torch.cuda.max_memory_allocated(device=local_rank) / 1024**3
+                    gpu_mem_res = torch.cuda.max_memory_reserved(device=local_rank) / 1024**3
+                    print(f"GPU Memory: {gpu_mem_alloc:.2f}GB allocated, {gpu_mem_res:.2f}GB reserved")
+                    if os.environ.get("NCCL_DEBUG", "") == "INFO":
+                        print(f"Check NCCL INFO logs for communication details")
+                    throughput = tokens_processed / elapsed_time
+                    wandb.log({"train_loss": loss.item(), "throughput_tokens_per_sec": throughput})
+                    print(f"Epoch [{epoch+1}/{args.num_epochs}], Step {i}, Loss: {loss.item():.4f}, Throughput: {throughput:.2f} tokens/sec")
+
+            # Collect timing stats at end of epoch
+            epoch_end_time = time.time()
+            epoch_duration = epoch_end_time - start_time
+
+            # Log per-node statistics
+            # Aggregate stats from different nodes - log from first process on each node
+            if node_local_rank == 0:
+                print(f"Node {node_rank}: Completed epoch {epoch+1} in {epoch_duration:.2f}s")
+
+            # Wait for all processes to finish epoch with timeout protection
+            barrier_start = time.time()
             try:
-                logits, _ = model(inputs)  # model returns (logits, kv_cache)
+                dist.barrier()
+                barrier_time = time.time() - barrier_start
+                if rank == 0:
+                    print(f"Synchronization barrier completed in {barrier_time:.3f}s")
             except Exception as e:
-                print(f"Rank {rank}: Forward pass failed with error: {str(e)}")
-                cleanup_ddp()
-                sys.exit(1)
+                barrier_time = time.time() - barrier_start
+                print(f"Rank {rank}: Warning: Barrier timed out after {barrier_time:.3f}s: {str(e)}")
+                print(f"Rank {rank}: Continuing training despite barrier timeout...")
 
-            # Calculate loss
-            loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
-
-            # Backward pass
-            try:
-                loss.backward()
-            except Exception as e:
-                print(f"Rank {rank}: Backward pass failed with error: {str(e)}")
-                cleanup_ddp()
-                sys.exit(1)
-
-            # Optimize
-            optimizer.step()
-            scheduler.step()
-
-            # Track loss
-            epoch_loss += loss.item()
-
-            # Periodically log progress with detailed timing breakdown
-            if i % 100 == 0 and (rank == 0 or rank % 8 == 0):
-                step_time = time.time() - step_start
-                local_world_size = torch.cuda.device_count()
-                node_rank = rank // local_world_size
-
-                print(f"Rank {rank} (Node {node_rank}, Local {rank % local_world_size}): "
-                      f"Epoch {epoch+1}/{args.num_epochs}, Step {i}, Loss: {loss.item():.4f}, "
-                      f"Step time: {step_time:.3f}s")
-
-                # Skip periodic communication check - it causes hangs in multi-node setup
-                # Communication during training happens naturally through gradients
-
-            # More comprehensive logging from rank 0
-            if i % 100 == 0 and rank == 0:
-                # Calculate throughput
-                end_time = time.time()
-                elapsed_time = end_time - start_time
-                tokens_processed = (i + 1) * args.batch_size * args.seq_len * world_size
-
-                # Print GPU memory stats
-                gpu_mem_alloc = torch.cuda.max_memory_allocated(device=local_rank) / 1024**3
-                gpu_mem_res = torch.cuda.max_memory_reserved(device=local_rank) / 1024**3
-                print(f"GPU Memory: {gpu_mem_alloc:.2f}GB allocated, {gpu_mem_res:.2f}GB reserved")
-
-                # Print NCCL stats if available
-                if os.environ.get("NCCL_DEBUG", "") == "INFO":
-                    print(f"Check NCCL INFO logs for communication details")
-                throughput = tokens_processed / elapsed_time
-                wandb.log({"train_loss": loss.item(), "throughput_tokens_per_sec": throughput})
-                print(f"Epoch [{epoch+1}/{args.num_epochs}], Step {i}, Loss: {loss.item():.4f}, Throughput: {throughput:.2f} tokens/sec")
-
-        # Collect timing stats at end of epoch
-        epoch_end_time = time.time()
-        epoch_duration = epoch_end_time - start_time
-
-        # Log per-node statistics
-        local_world_size = torch.cuda.device_count()
-        node_rank = rank // local_world_size
-        node_local_rank = rank % local_world_size
-
-        # Aggregate stats from different nodes - log from first process on each node
-        if node_local_rank == 0:
-            print(f"Node {node_rank}: Completed epoch {epoch+1} in {epoch_duration:.2f}s")
-
-        # Wait for all processes to finish epoch with timeout protection
-        barrier_start = time.time()
-        try:
-            # Specify device ID to avoid warnings and add timeout
-            dist.barrier()
-            barrier_time = time.time() - barrier_start
+            # Log barrier time from rank 0 (useful to detect stragglers)
             if rank == 0:
-                print(f"Synchronization barrier completed in {barrier_time:.3f}s")
-        except Exception as e:
-            # Continue even if barrier times out
-            barrier_time = time.time() - barrier_start
-            print(f"Rank {rank}: Warning: Barrier timed out after {barrier_time:.3f}s: {str(e)}")
-            print(f"Rank {rank}: Continuing training despite barrier timeout...")
-            # This allows training to continue even if one node has issues
+                print(f"Synchronization barrier took {barrier_time:.3f}s")
+                avg_loss = epoch_loss / len(train_loader)
+                wandb.log({"epoch_loss": avg_loss, "epoch": epoch})
+                print(f"Epoch [{epoch+1}/{args.num_epochs}] finished. Average Loss: {avg_loss:.4f}")
 
-        # Log barrier time from rank 0 (useful to detect stragglers)
-        if rank == 0:
-            print(f"Synchronization barrier took {barrier_time:.3f}s")
-            avg_loss = epoch_loss / len(train_loader)
-            wandb.log({"epoch_loss": avg_loss, "epoch": epoch})
-            print(f"Epoch [{epoch+1}/{args.num_epochs}] finished. Average Loss: {avg_loss:.4f}")
-
-            # Save checkpoint periodically
-            if (epoch + 1) % 5 == 0:
-                checkpoint_path = CHECKPOINT_DIR / f"model_epoch_{epoch+1}.pt"
-                torch.save(model.module.state_dict(), checkpoint_path)
-                print(f"Checkpoint saved to {checkpoint_path}")
+                # Save checkpoint periodically
+                if (epoch + 1) % 5 == 0:
+                    checkpoint_path = CHECKPOINT_DIR / f"model_epoch_{epoch+1}.pt"
+                    torch.save(model.module.state_dict(), checkpoint_path)
+                    print(f"Checkpoint saved to {checkpoint_path}")
+    except Exception as e:
+        print(f"Rank {rank}: Exception in training loop: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        cleanup_ddp()
+        sys.exit(1)
 
     # 6. Final Cleanup
     # Specify device ID to avoid warnings and add timeout
