@@ -308,7 +308,15 @@ def train():
                     })
                     print(f"Epoch [{epoch+1}/{args.num_epochs}], Step {i}, Loss: {loss.item():.4f}")
                     print(f"Node 0 GPU 0 Throughput: {per_gpu_throughput:.2f} tokens/sec")
-                    print(f"Total System Throughput: {total_system_throughput:.2f} tokens/sec ({world_size} GPUs across 2 nodes)")
+                    
+                    # Calculate number of nodes from environment or args
+                    try:
+                        num_nodes = int(os.environ.get("NNODES", "1"))  # Default to 1 if not set
+                    except ValueError:
+                        num_nodes = 1
+                        
+                    print(f"Total System Throughput: {total_system_throughput:.2f} tokens/sec ({world_size} GPUs across {num_nodes} node{'s' if num_nodes > 1 else ''})")
+
 
             # Collect timing stats at end of epoch
             epoch_end_time = time.time()
