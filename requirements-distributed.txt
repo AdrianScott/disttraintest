@@ -1,9 +1,0 @@
-# For distributed training on NVIDIA GPUs.
-# Note: The exact CUDA version should match your system's driver.
-torch
-
-# For memory-efficient training (e.g., 8-bit optimizers)
-bitsandbytes
-
-# For more advanced distributed training (optional, for FSDP)
-# accelerate
