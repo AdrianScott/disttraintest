@@ -239,9 +239,6 @@ def train(args):
             print(f"Rank {rank}: Starting epoch {epoch+1}/{args.num_epochs}")
             train_sampler.set_epoch(epoch)  # Important for proper shuffling in multi-node
 
-            # Zero gradients at the beginning of epoch
-            optimizer.zero_grad()
-
             for i, (inputs, targets) in enumerate(train_loader):
                 print(f"Rank {rank}: Fetched batch {i}")
                 inputs = inputs.to(local_rank)
