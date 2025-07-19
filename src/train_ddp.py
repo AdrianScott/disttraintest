@@ -12,7 +12,6 @@ import wandb
 import os
 import sys
 import time
-import datetime
 import argparse
 from src.model import TinyGPT
 
@@ -38,7 +37,7 @@ def get_args():
     parser.add_argument("--learning_rate", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=150, help="Number of training epochs")
     parser.add_argument("--seq_len", type=int, default=256, help="Sequence length for training")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4, 
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
                         help="Number of steps to accumulate gradients before optimizer step")
     # W&B
     parser.add_argument("--wandb_project", type=str, default="tiny-transformer-from-scratch-ddp", help="WandB project name")
@@ -176,7 +175,7 @@ def train(args):
     # 2. Load Tokenizer
     print(f"Rank {rank}: Loading tokenizer...")
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
-    # Remove barrier here - not needed for tokenizer loading
+
 
     # 3. Load and Prepare Data
     print(f"Rank {rank}: Loading and tokenizing dataset...")
@@ -186,7 +185,7 @@ def train(args):
 
     if rank == 0:
         print(f"Tokenized dataset with {len(token_ids)} tokens")
-    # Remove barrier here - not needed for data loading
+
 
     train_dataset = TextDataset(token_ids, args.seq_len)
     if rank % 8 == 0:  # Print from a subset of ranks
@@ -206,8 +205,7 @@ def train(args):
     # 4. Model, Optimizer, Loss, Scheduler
     print(f"Rank {rank}: Initializing model...")
     model = TinyGPT(VOCAB_SIZE, args.d_model, args.n_layers, args.n_heads, args.max_len).to(local_rank)
-    # Remove find_unused_parameters as it's causing overhead and warnings
-    # The model doesn't actually have unused parameters in the forward pass
+
     model = DDP(model, device_ids=[local_rank])
 
     # Wait for all processes to finish initialization with timeout
@@ -230,7 +228,7 @@ def train(args):
     local_world_size = torch.cuda.device_count()
     node_rank = rank // local_world_size
     node_local_rank = rank % local_world_size
-    
+
     try:
         for epoch in range(args.num_epochs):
             model.train()
@@ -243,7 +241,7 @@ def train(args):
 
             # Zero gradients at the beginning of epoch
             optimizer.zero_grad()
-            
+
             for i, (inputs, targets) in enumerate(train_loader):
                 print(f"Rank {rank}: Fetched batch {i}")
                 inputs = inputs.to(local_rank)
@@ -263,7 +261,7 @@ def train(args):
 
                 # Calculate loss
                 loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
-                
+
                 # Scale loss by accumulation steps to maintain correct gradients
                 loss = loss / args.gradient_accumulation_steps
 
@@ -280,17 +278,17 @@ def train(args):
 
                 # Count tokens processed
                 tokens_processed += inputs.numel()
-                
+
                 # Only step optimizer every N accumulation steps
                 if (i + 1) % args.gradient_accumulation_steps == 0 or (i + 1) == len(train_loader):
                     # Log when we're doing communication
                     if rank == 0:
                         print(f"Rank {rank}: Performing optimizer step after gradient accumulation (batch {i+1})")
-                    
+
                     # Optimize
                     optimizer.step()
                     scheduler.step()
-                    
+
                     # Clear gradients after stepping
                     optimizer.zero_grad()
 
@@ -306,27 +304,27 @@ def train(args):
                     print(f"GPU Memory: {gpu_mem_alloc:.2f}GB allocated, {gpu_mem_res:.2f}GB reserved")
                     if os.environ.get("NCCL_DEBUG", "") == "INFO":
                         print(f"Check NCCL INFO logs for communication details")
-                    
+
                     # Calculate per-GPU throughput (this GPU only)
                     per_gpu_throughput = tokens_processed / elapsed_time
-                    
+
                     # Calculate total system throughput (all GPUs across all nodes)
                     total_system_throughput = per_gpu_throughput * world_size
-                    
+
                     wandb.log({
-                        "train_loss": loss.item(), 
+                        "train_loss": loss.item(),
                         "per_gpu_throughput": per_gpu_throughput,
                         "total_system_throughput": total_system_throughput
                     })
                     print(f"Epoch [{epoch+1}/{args.num_epochs}], Step {i}, Loss: {loss.item():.4f}")
                     print(f"Node 0 GPU 0 Throughput: {per_gpu_throughput:.2f} tokens/sec")
-                    
+
                     # Calculate number of nodes from environment or args
                     try:
                         num_nodes = int(os.environ.get("NNODES", "1"))  # Default to 1 if not set
                     except ValueError:
                         num_nodes = 1
-                    
+
                     # Add gradient accumulation info to logging
                     effective_batch_size = args.batch_size * args.gradient_accumulation_steps * world_size
                     print(f"Total System Throughput: {total_system_throughput:.2f} tokens/sec ({world_size} GPUs across {num_nodes} node{'s' if num_nodes > 1 else ''})")
