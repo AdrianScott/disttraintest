@@ -38,8 +38,10 @@ RUN_ID=$(date +"%Y%m%d_%H%M%S")
 # NCCL / Torch env (minimize overhead, only set debug when troubleshooting)
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 export NCCL_DEBUG_FILE="${LOG_DIR}/nccl_${RUN_ID}_node${NODE_RANK}.log"
+export NCCL_DEBUG_SUBSYS=ALL  # Add this to see all NCCL subsystem logs
 
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_DISTRIBUTED_DEBUG=DETAIL  # More verbose PyTorch distributed logging
 
 # Socket tuning
 export NCCL_SOCKET_NTHREADS=${NCCL_SOCKET_NTHREADS:-2}

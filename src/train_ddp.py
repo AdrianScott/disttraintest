@@ -22,6 +22,25 @@ import argparse
 import socket
 import datetime
 import traceback
+import signal
+import atexit
+
+# Force immediate log flushing to see all messages in real-time
+import functools
+print = functools.partial(print, flush=True)
+
+# Helper function to format elapsed time in a more readable way
+def format_elapsed_time(seconds):
+    """Format seconds into hours, minutes, seconds format"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    seconds = int(seconds % 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds:02d}s"
+    else:
+        return f"{seconds}s"
 
 from src.model import TinyGPT
 from src.utils.perf import AverageMeter
@@ -97,12 +116,40 @@ def test_communication(local_rank, world_size):
     print(f"Rank {rank}: Communication test {'PASSED' if result else 'FAILED'}. Got {tensor.item()}, expected {expected}")
     return result
 
+# Flag to track if cleanup has been done
+_cleanup_done = False
+
 def cleanup_ddp():
-    """ Cleans up the distributed process group. """
-    print(f"Rank {dist.get_rank() if dist.is_initialized() else 'Unknown'}: Cleaning up distributed process group")
-    if dist.is_initialized():
-        dist.destroy_process_group()
-        print(f"Rank {dist.get_rank() if dist.is_initialized() else 'Unknown'}: Process group destroyed")
+    """Cleans up the distributed process group."""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    
+    try:
+        if dist.is_initialized():
+            rank = dist.get_rank()
+            print(f"Rank {rank}: Cleaning up distributed process group", flush=True)
+            dist.destroy_process_group()
+            print(f"Rank {rank}: Process group destroyed successfully", flush=True)
+        else:
+            print("DDP not initialized, no cleanup needed", flush=True)
+    except Exception as e:
+        print(f"Error during cleanup: {str(e)}", flush=True)
+        print(traceback.format_exc(), flush=True)
+    
+    _cleanup_done = True
+
+# Register cleanup handlers
+atexit.register(cleanup_ddp)
+
+def signal_handler(sig, frame):
+    print(f"Received signal {sig}, cleaning up...", flush=True)
+    cleanup_ddp()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 def print_network_info():
     """Print network information to help diagnose connection issues."""
@@ -285,8 +332,8 @@ def train(args):
         
         if rank == 0:
             elapsed_time = time.time() - training_start_time
-            elapsed_hrs = elapsed_time / 3600
-            print(f"[{elapsed_hrs:.2f}h elapsed] Starting epoch {epoch+1}/{args.num_epochs}")
+            elapsed_str = format_elapsed_time(elapsed_time)
+            print(f"[{elapsed_str} elapsed] Starting epoch {epoch+1}/{args.num_epochs}")
 
         # Iterate
         for i, (inputs, targets) in enumerate(train_loader):
@@ -325,14 +372,14 @@ def train(args):
                 elapsed_time = time.time() - training_start_time
                 per_gpu_tps = tokens_meter.avg / step_time_meter.avg
                 total_tps = per_gpu_tps * world_size
-                elapsed_hrs = elapsed_time / 3600
-                print(f"[{elapsed_hrs:.2f}h elapsed] Step {global_step}, Epoch {epoch+1}/{args.num_epochs}, Loss: {loss_meter.avg:.4f}, Speed: {total_tps:.1f} tokens/sec")
+                elapsed_str = format_elapsed_time(elapsed_time)
+                print(f"[{elapsed_str} elapsed] Step {global_step}, Epoch {epoch+1}/{args.num_epochs}, Loss: {loss_meter.avg:.4f}, Speed: {total_tps:.1f} tokens/sec")
                 wandb.log({
                     "train/loss": loss_meter.avg,
                     "train/per_gpu_tokens_per_s": per_gpu_tps,
                     "train/total_tokens_per_s": total_tps,
                     "train/lr": scheduler.get_last_lr()[0],
-                    "train/elapsed_hours": elapsed_hrs,
+                    "train/elapsed_hours": elapsed_time / 3600,  # Convert to hours for consistency in wandb
                     "step": global_step,
                     "epoch": epoch
                 })
@@ -344,8 +391,9 @@ def train(args):
         epoch_time = time.time() - epoch_start
         if rank == 0:
             elapsed_time = time.time() - training_start_time
-            elapsed_hrs = elapsed_time / 3600
-            print(f"Epoch {epoch+1}/{args.num_epochs} finished in {epoch_time:.2f}s. Total elapsed time: {elapsed_hrs:.2f}h, Avg loss: {loss_meter.avg:.4f}")
+            elapsed_str = format_elapsed_time(elapsed_time)
+            epoch_time_str = format_elapsed_time(epoch_time)
+            print(f"Epoch {epoch+1}/{args.num_epochs} finished in {epoch_time_str}. Total elapsed time: {elapsed_str}, Avg loss: {loss_meter.avg:.4f}")
             wandb.log({"epoch/loss": loss_meter.avg, "epoch/time_s": epoch_time, "epoch": epoch})
 
             # Save checkpoint periodically
@@ -373,33 +421,30 @@ def train(args):
     # End of training
     if rank == 0:
         total_training_time = time.time() - training_start_time
-        hours = total_training_time // 3600
-        minutes = (total_training_time % 3600) // 60
-        seconds = total_training_time % 60
-        print(f"Training completed in {hours:.0f}h {minutes:.0f}m {seconds:.1f}s")
+        elapsed_str = format_elapsed_time(total_training_time)
+        print(f"Training completed in {elapsed_str}")
     
     cleanup_ddp()
 
 
 def main():
     args = get_args()
+    print("Starting training process with args:", vars(args), flush=True)
+    
     try:
+        print("Entering train() function...", flush=True)
         train(args)
+        print("Completed train() function normally", flush=True)
     except Exception as e:
-        print(f"Error in training: {str(e)}")
-        print(traceback.format_exc())
+        print(f"Error in training: {str(e)}", flush=True)
+        print(traceback.format_exc(), flush=True)
         # Make sure to cleanup even if there's an error
-        try:
-            cleanup_ddp()
-        except:
-            pass
+        cleanup_ddp()
         sys.exit(1)
-    finally:
-        # Always try to cleanup
-        try:
-            cleanup_ddp()
-        except:
-            pass
+    
+    # Normal exit path should also call cleanup
+    cleanup_ddp()
+    print("Training process completed successfully", flush=True)
 
 if __name__ == "__main__":
     main()
