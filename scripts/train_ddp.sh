@@ -16,6 +16,7 @@ NUM_WORKERS=${NUM_WORKERS:-2}
 GRAD_ACC_STEPS=${GRAD_ACC_STEPS:-4}
 LOG_EVERY=${LOG_EVERY:-20}
 BUCKET_CAP_MB=${BUCKET_CAP_MB:-25}
+NUM_EPOCHS=${NUM_EPOCHS:-150}
 
 SCRIPT="src.train_ddp"
 
@@ -68,7 +69,7 @@ torchrun --nproc_per_node=$N_PROCS_PER_NODE --nnodes=$NNODES --node_rank=$NODE_R
     --n_heads=8 \
     --batch_size=32 \
     --learning_rate=3e-4 \
-    --num_epochs=150 \
+    --num_epochs=$NUM_EPOCHS \
     --n_processes_per_node=$N_PROCS_PER_NODE \
     --seq_len=256 \
     --num_workers=$NUM_WORKERS \
