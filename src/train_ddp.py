@@ -71,19 +71,10 @@ class TextDataset(Dataset):
         targets = torch.tensor(self.token_ids[start+1:end+1], dtype=torch.long)
         return inputs, targets
 
-# --- DDP Setup ---
-def setup_ddp(rank, world_size):
-    """Setup already done by torchrun; just sanity info."""
-    # Optional: override default timeout
-    return rank, world_size
-
-def test_communication(local_rank, world_size):
-    """Quick all-reduce sanity check."""
-    rank = dist.get_rank()
-    tensor = torch.ones(1, device=f"cuda:{local_rank}") * (rank + 1)
-    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-    expected = world_size * (world_size + 1) / 2
-    return abs(tensor.item() - expected) < 1e-3
+# --- DDP Helper ---
+def log_with_rank(rank, msg):
+    """Prepends a rank-specific prefix to a log message."""
+    print(f"[Rank {rank}] {msg}")
 
 def cleanup_ddp():
     """ Cleans up the distributed process group. """
@@ -106,16 +97,9 @@ def train(args):
     torch.set_float32_matmul_precision("high")
 
     # Init process group
+    log_with_rank(rank, "Initializing process group...")
     dist.init_process_group(backend="nccl", init_method="env://")
-
-    # Quick comm test
-    if not test_communication(local_rank, world_size):
-        if rank == 0:
-            print("Communication test FAILED. Aborting.")
-        cleanup_ddp()
-        sys.exit(1)
-    if rank == 0:
-        print(f"DDP initialized. World size: {world_size}")
+    log_with_rank(rank, f"Process group initialized. World size: {world_size}")
 
     # 1. Initialization (only on main process)
     if rank == 0:
@@ -129,17 +113,21 @@ def train(args):
         print(f"Effective batch size: {config['batch_size_total']} tokens sequences")
 
     # 2. Load Tokenizer
+    # All ranks load the tokenizer, but only rank 0 prints messages
+    if rank == 0: print("Loading tokenizer...")
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
+    log_with_rank(rank, "Tokenizer loaded.")
 
     # 3. Load and Prepare Data
-    if rank == 0:
-        print("Loading and tokenizing dataset...")
-    t0 = time.time()
+    if rank == 0: print("Loading and tokenizing dataset...")
+    # Only rank 0 should download. Other ranks will use the cache.
+    if rank != 0: dist.barrier()
     wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    if rank == 0: dist.barrier()
+
     all_text = " ".join([text for text in wikitext["text"] if text.strip()])
     token_ids = tokenizer.encode(all_text).ids
-    if rank == 0:
-        print(f"Tokenized {len(token_ids)} tokens in {time.time() - t0:.2f}s")
+    log_with_rank(rank, f"Tokenized {len(token_ids)} tokens.")
 
     train_dataset = TextDataset(token_ids, args.seq_len)
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
@@ -153,14 +141,17 @@ def train(args):
         persistent_workers=(args.num_workers > 0),
         drop_last=True,
     )
+    log_with_rank(rank, f"DataLoader created with {len(train_loader)} batches.")
+
 
     # 4. Model, Optimizer, Loss, Scheduler
+    log_with_rank(rank, "Creating model...")
     model = TinyGPT(VOCAB_SIZE, args.d_model, args.n_layers, args.n_heads, args.max_len).to(device)
 
     # For PyTorch 2.0, compile the model for a significant speedup
-    if rank == 0:
-        print("Compiling model with torch.compile()...")
+    log_with_rank(rank, "Compiling model with torch.compile()...")
     model = torch.compile(model)
+    log_with_rank(rank, "Model compiled.")
 
     model = DDP(
         model,
@@ -170,6 +161,8 @@ def train(args):
         broadcast_buffers=not args.disable_broadcast_buffers,
         bucket_cap_mb=args.bucket_cap_mb,
     )
+    log_with_rank(rank, "Model wrapped in DDP.")
+
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
     criterion = nn.CrossEntropyLoss()
@@ -196,6 +189,11 @@ def train(args):
         )
         profiler.__enter__()
 
+    # Barrier to ensure all processes have a correctly setup model before starting
+    log_with_rank(rank, "Waiting at barrier before training loop...")
+    dist.barrier()
+    log_with_rank(rank, "Barrier passed. Starting training.")
+
     # 5. Training Loop
     global_step = 0
     for epoch in range(args.num_epochs):
@@ -218,7 +216,7 @@ def train(args):
             with context:
                 # Use bfloat16 for mixed precision, which is generally better for transformers
                 with autocast(device_type=device_type, dtype=torch.bfloat16):
-                    logits = model(inputs)  # model returns logits
+                    logits, _ = model(inputs)  # model returns (logits, caches)
                     loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
                 loss = loss / args.gradient_accumulation_steps
 
@@ -281,6 +279,7 @@ def train(args):
         profiler.__exit__(None, None, None)
 
     cleanup_ddp()
+    log_with_rank(rank, "Training complete. Process finished.")
 
 if __name__ == "__main__":
     args = get_args()

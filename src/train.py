@@ -97,7 +97,7 @@ def train():
             inputs, targets = inputs.to(device), targets.to(device)
 
             # Forward pass
-            logits = model(inputs)
+            logits, _ = model(inputs)
             # Reshape for loss calculation
             loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
 

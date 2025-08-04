@@ -31,7 +31,7 @@ def test_model_shape_flow(model: TinyGPT):
     x = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN))
 
     # Forward pass (training mode, no cache)
-    output = model(x, use_cache=False)
+    output, _ = model(x, use_cache=False)
 
     # Output should be logits with shape (batch_size, seq_len, vocab_size)
     expected_shape = (BATCH_SIZE, SEQ_LEN, VOCAB_SIZE)
@@ -55,8 +55,8 @@ def test_causal_mask(model: TinyGPT):
     input2 = input1.clone()
 
     # Get outputs
-    output1 = model(input1)
-    output2 = model(input2[:, :-1]) # Pass a shorter sequence
+    output1, _ = model(input1)
+    output2, _ = model(input2[:, :-1]) # Pass a shorter sequence
 
     # The logits for the first 4 tokens should be nearly identical
     assert torch.allclose(output1[:, :-1, :], output2, atol=1e-6), \

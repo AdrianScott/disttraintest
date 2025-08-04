@@ -49,6 +49,6 @@ class TinyGPT(nn.Module):
         x = self.ln_f(x)
         logits = self.lm_head(x)
 
-        if use_cache:
-            return logits, new_kv_caches
-        return logits
+        # Always return a tuple for a consistent API, which is important for DDP and torch.compile.
+        # new_kv_caches will be an empty list if use_cache is False.
+        return logits, new_kv_caches
