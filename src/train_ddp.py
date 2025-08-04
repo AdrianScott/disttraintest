@@ -6,10 +6,17 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 # Handle different PyTorch versions
+import torch
+torch_version = torch.__version__
+is_torch_2_2 = torch_version.startswith("2.2")
+
 try:
-    from torch.amp import GradScaler, autocast
+    if is_torch_2_2:
+        # Specifically handle PyTorch 2.2
+        from torch.cuda.amp import GradScaler, autocast
+    else:
+        from torch.amp import GradScaler, autocast
 except ImportError:
-    # For PyTorch 2.2+
     from torch.cuda.amp import GradScaler, autocast
 from tokenizers import Tokenizer
 from datasets import load_dataset
@@ -346,10 +353,17 @@ def train(args):
             sync_needed = ((i + 1) % args.gradient_accumulation_steps == 0) or ((i + 1) == len(train_loader))
             context = model.no_sync() if not sync_needed else torch.enable_grad()
             with context:
-                # Use bfloat16 for mixed precision, which is generally better for transformers
-                with autocast(device_type=device_type, dtype=torch.bfloat16):
-                    logits, _ = model(inputs)  # model returns (logits, caches)
-                    loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
+                # Use autocast appropriately based on PyTorch version
+                if is_torch_2_2:
+                    # For PyTorch 2.2, don't use device_type
+                    with autocast(dtype=torch.bfloat16):
+                        logits, _ = model(inputs)  # model returns (logits, caches)
+                        loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
+                else:
+                    # For all other versions, use device_type
+                    with autocast(device_type=device_type, dtype=torch.bfloat16):
+                        logits, _ = model(inputs)  # model returns (logits, caches)
+                        loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
                 loss = loss / args.gradient_accumulation_steps
 
             scaler.scale(loss).backward()
