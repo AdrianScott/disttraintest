@@ -5,7 +5,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from tokenizers import Tokenizer
 from datasets import load_dataset
 from pathlib import Path
@@ -99,6 +99,7 @@ def train(args):
 
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
+    device_type = device.type
 
     # Speed-related flags
     torch.backends.cudnn.benchmark = True
@@ -155,7 +156,7 @@ def train(args):
 
     # 4. Model, Optimizer, Loss, Scheduler
     model = TinyGPT(VOCAB_SIZE, args.d_model, args.n_layers, args.n_heads, args.max_len).to(device)
-    
+
     # For PyTorch 2.0, compile the model for a significant speedup
     if rank == 0:
         print("Compiling model with torch.compile()...")
@@ -173,7 +174,7 @@ def train(args):
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
     criterion = nn.CrossEntropyLoss()
     scheduler = CosineAnnealingLR(optimizer, T_max=len(train_loader) * args.num_epochs)
-    
+
     # Mixed precision scaler
     scaler = GradScaler()
 
@@ -216,11 +217,11 @@ def train(args):
             context = model.no_sync() if not sync_needed else torch.enable_grad()
             with context:
                 # Use bfloat16 for mixed precision, which is generally better for transformers
-                with autocast(dtype=torch.bfloat16):
+                with autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits = model(inputs)  # model returns logits
                     loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
                 loss = loss / args.gradient_accumulation_steps
-            
+
             scaler.scale(loss).backward()
 
             if sync_needed:
