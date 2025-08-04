@@ -107,7 +107,7 @@ def train():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Gradient clipping
             optimizer.step()
             scheduler.step()
-            
+
             if step % 100 == 0:
                 wandb.log({"loss": loss.item(), "lr": scheduler.get_last_lr()[0]})
                 print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Step [{step}], Loss: {loss.item():.4f}")

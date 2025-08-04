@@ -5,6 +5,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from torch.cuda.amp import GradScaler, autocast
 from tokenizers import Tokenizer
 from datasets import load_dataset
 from pathlib import Path
@@ -154,6 +155,11 @@ def train(args):
 
     # 4. Model, Optimizer, Loss, Scheduler
     model = TinyGPT(VOCAB_SIZE, args.d_model, args.n_layers, args.n_heads, args.max_len).to(device)
+    
+    # For PyTorch 2.0, compile the model for a significant speedup
+    if rank == 0:
+        print("Compiling model with torch.compile()...")
+    model = torch.compile(model)
 
     model = DDP(
         model,
@@ -167,6 +173,9 @@ def train(args):
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
     criterion = nn.CrossEntropyLoss()
     scheduler = CosineAnnealingLR(optimizer, T_max=len(train_loader) * args.num_epochs)
+    
+    # Mixed precision scaler
+    scaler = GradScaler()
 
     # Meters
     loss_meter = AverageMeter()
@@ -206,13 +215,17 @@ def train(args):
             sync_needed = ((i + 1) % args.gradient_accumulation_steps == 0) or ((i + 1) == len(train_loader))
             context = model.no_sync() if not sync_needed else torch.enable_grad()
             with context:
-                logits, _ = model(inputs)  # model returns (logits, kv_cache)
-                loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
+                # Use bfloat16 for mixed precision, which is generally better for transformers
+                with autocast(dtype=torch.bfloat16):
+                    logits = model(inputs)  # model returns logits
+                    loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
                 loss = loss / args.gradient_accumulation_steps
-                loss.backward()
+            
+            scaler.scale(loss).backward()
 
             if sync_needed:
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 

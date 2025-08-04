@@ -29,10 +29,10 @@ def test_model_shape_flow(model: TinyGPT):
     """
     # Input is a batch of token ID sequences
     x = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LEN))
-    
-    # Forward pass
-    output = model(x)
-    
+
+    # Forward pass (training mode, no cache)
+    output = model(x, use_cache=False)
+
     # Output should be logits with shape (batch_size, seq_len, vocab_size)
     expected_shape = (BATCH_SIZE, SEQ_LEN, VOCAB_SIZE)
     assert output.shape == expected_shape, \
@@ -42,7 +42,7 @@ def test_model_creation(model: TinyGPT):
     """Tests that the model and its components are created correctly."""
     assert isinstance(model, TinyGPT)
     assert len(model.layers) == N_LAYERS, f"Expected {N_LAYERS} layers, but got {len(model.layers)}"
-    assert model.fc_out.out_features == VOCAB_SIZE, f"Expected output layer with {VOCAB_SIZE} units."
+    assert model.lm_head.out_features == VOCAB_SIZE, f"Expected output layer with {VOCAB_SIZE} units."
 
 def test_causal_mask(model: TinyGPT):
     """ 

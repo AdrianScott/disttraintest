@@ -47,7 +47,7 @@ def generate(checkpoint_path: Path, prompt: str, max_new_tokens: int, method: st
 
     with torch.no_grad():
         # Process the initial prompt and get the first set of logits and the initial KV cache
-        logits, kv_caches = model(input_tensor, kv_caches=None)
+        logits, kv_caches = model(input_tensor, use_cache=True, kv_caches=None)
         next_token_logits = logits[:, -1, :]
 
         # Autoregressive generation loop
@@ -87,7 +87,7 @@ def generate(checkpoint_path: Path, prompt: str, max_new_tokens: int, method: st
             generated_ids.append(next_token_id.item())
 
             # Feed the new token back into the model
-            logits, kv_caches = model(next_token_id, kv_caches=kv_caches)
+            logits, kv_caches = model(next_token_id, use_cache=True, kv_caches=kv_caches)
             next_token_logits = logits[:, -1, :]
 
     # 4. Decode and print

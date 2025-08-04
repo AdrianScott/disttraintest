@@ -15,21 +15,22 @@ class TinyGPT(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # Transformer blocks
-        self.layers = nn.ModuleList([TransformerBlock(d_model, n_heads, dropout, max_len=max_len) for _ in range(n_layers)])
-        
+        self.layers = nn.ModuleList([TransformerBlock(d_model, n_heads, dropout) for _ in range(n_layers)])
+
         # Final layer norm and output head
         self.ln_f = nn.LayerNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
 
-    def forward(self, idx, kv_caches=None):
+    def forward(self, idx, use_cache=False, kv_caches=None):
         B, T = idx.size()
         assert T <= self.max_len, f"Cannot forward sequence of length {T}, block size is only {self.max_len}"
-        
+
         # If we are in generation mode (using KV cache), the position is the length of the cache
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device).unsqueeze(0) # shape (1, T)
-        if kv_caches is not None:
-            pos_start = kv_caches[0][0].size(2) # Get cached sequence length
-            pos = torch.arange(pos_start, pos_start + T, dtype=torch.long, device=idx.device).unsqueeze(0)
+        pos_start = 0
+        if use_cache and kv_caches is not None:
+             # Get cached sequence length from the first layer's key cache
+             pos_start = kv_caches[0][0].size(2)
+        pos = torch.arange(pos_start, pos_start + T, dtype=torch.long, device=idx.device).unsqueeze(0)
 
         # Forward the embeddings
         tok_emb = self.token_embedding(idx) # (B, T, d_model)
@@ -39,12 +40,15 @@ class TinyGPT(nn.Module):
         # Forward through the transformer blocks
         new_kv_caches = []
         for i, layer in enumerate(self.layers):
-            layer_cache = kv_caches[i] if kv_caches is not None else None
-            x, new_cache = layer(x, kv_cache=layer_cache)
-            new_kv_caches.append(new_cache)
+            layer_kv_cache = kv_caches[i] if use_cache and kv_caches is not None else None
+            x, new_kv_cache = layer(x, use_cache=use_cache, kv_cache=layer_kv_cache)
+            if use_cache:
+                new_kv_caches.append(new_kv_cache)
 
         # Final normalization and projection
         x = self.ln_f(x)
         logits = self.lm_head(x)
-        
-        return logits, new_kv_caches
+
+        if use_cache:
+            return logits, new_kv_caches
+        return logits
