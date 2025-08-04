@@ -5,7 +5,12 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
-from torch.amp import GradScaler, autocast
+# Handle different PyTorch versions
+try:
+    from torch.amp import GradScaler, autocast
+except ImportError:
+    # For PyTorch 2.2+
+    from torch.cuda.amp import GradScaler, autocast
 from tokenizers import Tokenizer
 from datasets import load_dataset
 from pathlib import Path
@@ -14,6 +19,9 @@ import os
 import sys
 import time
 import argparse
+import socket
+import datetime
+import traceback
 
 from src.model import TinyGPT
 from src.utils.perf import AverageMeter
@@ -71,14 +79,57 @@ class TextDataset(Dataset):
         targets = torch.tensor(self.token_ids[start+1:end+1], dtype=torch.long)
         return inputs, targets
 
+# --- DDP Setup ---
+def setup_ddp(rank, world_size):
+    """Setup already done by torchrun; just sanity info."""
+    # Optional: override default timeout
+    print(f"Rank {rank}: DDP setup complete with world_size={world_size}")
+    return rank, world_size
+
+def test_communication(local_rank, world_size):
+    """Quick all-reduce sanity check."""
+    rank = dist.get_rank()
+    tensor = torch.ones(1, device=f"cuda:{local_rank}") * (rank + 1)
+    print(f"Rank {rank}: Starting communication test with tensor={tensor.item()}")
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    expected = world_size * (world_size + 1) / 2
+    result = abs(tensor.item() - expected) < 1e-3
+    print(f"Rank {rank}: Communication test {'PASSED' if result else 'FAILED'}. Got {tensor.item()}, expected {expected}")
+    return result
+
+def cleanup_ddp():
+    """ Cleans up the distributed process group. """
+    print(f"Rank {dist.get_rank() if dist.is_initialized() else 'Unknown'}: Cleaning up distributed process group")
+    if dist.is_initialized():
+        dist.destroy_process_group()
+        print(f"Rank {dist.get_rank() if dist.is_initialized() else 'Unknown'}: Process group destroyed")
+
+def print_network_info():
+    """Print network information to help diagnose connection issues."""
+    hostname = socket.gethostname()
+    try:
+        local_ip = socket.gethostbyname(hostname)
+    except:
+        local_ip = "Unable to determine IP"
+    
+    print(f"Network info: Hostname={hostname}, Local IP={local_ip}")
+    print(f"Environment: MASTER_ADDR={os.environ.get('MASTER_ADDR', 'not set')}, MASTER_PORT={os.environ.get('MASTER_PORT', 'not set')}")
+    print(f"RANK={os.environ.get('RANK', 'not set')}, WORLD_SIZE={os.environ.get('WORLD_SIZE', 'not set')}, LOCAL_RANK={os.environ.get('LOCAL_RANK', 'not set')}")
+    
+    # Try to ping master node if this is not the master
+    if os.environ.get('RANK', '0') != '0' and os.environ.get('MASTER_ADDR'):
+        master_addr = os.environ.get('MASTER_ADDR')
+        print(f"Attempting to reach master node at {master_addr}...")
+        try:
+            socket.create_connection((master_addr, int(os.environ.get('MASTER_PORT', '29500'))), timeout=5)
+            print(f"Successfully connected to master at {master_addr}:{os.environ.get('MASTER_PORT', '29500')}")
+        except Exception as e:
+            print(f"Failed to connect to master: {str(e)}")
+
 # --- DDP Helper ---
 def log_with_rank(rank, msg):
     """Prepends a rank-specific prefix to a log message."""
     print(f"[Rank {rank}] {msg}")
-
-def cleanup_ddp():
-    """ Cleans up the distributed process group. """
-    dist.destroy_process_group()
 
 # --- Main Training Logic ---
 def train(args):
@@ -88,18 +139,47 @@ def train(args):
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
 
+    # Start overall timer
+    training_start_time = time.time()
+    
+    print(f"Rank {rank}: Starting train() function at {time.strftime('%Y-%m-%d %H:%M:%S')} with local_rank={local_rank}, world_size={world_size}")
+    
+    # Print network information
+    print_network_info()
+    
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
     device_type = device.type
+    
+    print(f"Rank {rank}: Using device {device}")
 
     # Speed-related flags
     torch.backends.cudnn.benchmark = True
     torch.set_float32_matmul_precision("high")
 
     # Init process group
-    log_with_rank(rank, "Initializing process group...")
-    dist.init_process_group(backend="nccl", init_method="env://")
-    log_with_rank(rank, f"Process group initialized. World size: {world_size}")
+    print(f"Rank {rank}: Initializing process group with NCCL backend (timeout: 60s)")
+    init_start_time = time.time()
+    try:
+        # Increase timeout for better debugging
+        dist.init_process_group(backend="nccl", init_method="env://", timeout=datetime.timedelta(seconds=60))
+        init_time = time.time() - init_start_time
+        print(f"Rank {rank}: Process group initialized successfully in {init_time:.2f}s")
+    except Exception as e:
+        print(f"Rank {rank}: Failed to initialize process group after {time.time() - init_start_time:.2f}s: {str(e)}")
+        print(traceback.format_exc())
+        sys.exit(1)
+
+    # Quick comm test
+    print(f"Rank {rank}: Running communication test")
+    comm_start_time = time.time()
+    if not test_communication(local_rank, world_size):
+        if rank == 0:
+            print(f"Communication test FAILED after {time.time() - comm_start_time:.2f}s. Aborting.")
+        cleanup_ddp()
+        sys.exit(1)
+    if rank == 0:
+        print(f"DDP initialized. World size: {world_size}. Initialization took {time.time() - init_start_time:.2f}s total")
 
     # 1. Initialization (only on main process)
     if rank == 0:
@@ -202,6 +282,11 @@ def train(args):
         epoch_start = time.time()
         loss_meter.reset()
         tokens_meter.reset()
+        
+        if rank == 0:
+            elapsed_time = time.time() - training_start_time
+            elapsed_hrs = elapsed_time / 3600
+            print(f"[{elapsed_hrs:.2f}h elapsed] Starting epoch {epoch+1}/{args.num_epochs}")
 
         # Iterate
         for i, (inputs, targets) in enumerate(train_loader):
@@ -237,27 +322,31 @@ def train(args):
 
             # Logging (rank 0 only)
             if rank == 0 and (global_step % args.log_every == 0):
+                elapsed_time = time.time() - training_start_time
                 per_gpu_tps = tokens_meter.avg / step_time_meter.avg
                 total_tps = per_gpu_tps * world_size
+                elapsed_hrs = elapsed_time / 3600
+                print(f"[{elapsed_hrs:.2f}h elapsed] Step {global_step}, Epoch {epoch+1}/{args.num_epochs}, Loss: {loss_meter.avg:.4f}, Speed: {total_tps:.1f} tokens/sec")
                 wandb.log({
                     "train/loss": loss_meter.avg,
                     "train/per_gpu_tokens_per_s": per_gpu_tps,
                     "train/total_tokens_per_s": total_tps,
                     "train/lr": scheduler.get_last_lr()[0],
+                    "train/elapsed_hours": elapsed_hrs,
                     "step": global_step,
                     "epoch": epoch
                 })
-                print(f"[E{epoch+1} S{global_step}] loss={loss_meter.avg:.4f} "
-                      f"perGPU={per_gpu_tps:.0f} tok/s total={total_tps:.0f} tok/s")
 
             if profiler is not None:
                 profiler.step()
 
-        # Epoch end
-        epoch_dur = time.time() - epoch_start
+        # End of epoch logging
+        epoch_time = time.time() - epoch_start
         if rank == 0:
-            print(f"Epoch {epoch+1}/{args.num_epochs} finished in {epoch_dur:.1f}s. Avg loss {loss_meter.avg:.4f}")
-            wandb.log({"epoch/loss": loss_meter.avg, "epoch/time_s": epoch_dur, "epoch": epoch})
+            elapsed_time = time.time() - training_start_time
+            elapsed_hrs = elapsed_time / 3600
+            print(f"Epoch {epoch+1}/{args.num_epochs} finished in {epoch_time:.2f}s. Total elapsed time: {elapsed_hrs:.2f}h, Avg loss: {loss_meter.avg:.4f}")
+            wandb.log({"epoch/loss": loss_meter.avg, "epoch/time_s": epoch_time, "epoch": epoch})
 
             # Save checkpoint periodically
             if (epoch + 1) % 5 == 0:
@@ -281,6 +370,36 @@ def train(args):
     cleanup_ddp()
     log_with_rank(rank, "Training complete. Process finished.")
 
-if __name__ == "__main__":
+    # End of training
+    if rank == 0:
+        total_training_time = time.time() - training_start_time
+        hours = total_training_time // 3600
+        minutes = (total_training_time % 3600) // 60
+        seconds = total_training_time % 60
+        print(f"Training completed in {hours:.0f}h {minutes:.0f}m {seconds:.1f}s")
+    
+    cleanup_ddp()
+
+
+def main():
     args = get_args()
-    train(args)
+    try:
+        train(args)
+    except Exception as e:
+        print(f"Error in training: {str(e)}")
+        print(traceback.format_exc())
+        # Make sure to cleanup even if there's an error
+        try:
+            cleanup_ddp()
+        except:
+            pass
+        sys.exit(1)
+    finally:
+        # Always try to cleanup
+        try:
+            cleanup_ddp()
+        except:
+            pass
+
+if __name__ == "__main__":
+    main()
