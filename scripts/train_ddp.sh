@@ -36,7 +36,7 @@ mkdir -p $LOG_DIR
 RUN_ID=$(date +"%Y%m%d_%H%M%S")
 
 # NCCL / Torch env (minimize overhead, only set debug when troubleshooting)
-export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 export NCCL_DEBUG_FILE="${LOG_DIR}/nccl_${RUN_ID}_node${NODE_RANK}.log"
 
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
