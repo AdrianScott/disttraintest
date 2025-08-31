@@ -9,6 +9,7 @@ from pathlib import Path
 import wandb
 
 from src.model import TinyGPT
+from src.utils.seed import set_seed
 
 # --- Configuration ---
 # Model params
@@ -52,6 +53,9 @@ class TextDataset(Dataset):
 # --- Main Training Logic ---
 def train():
     """ Main function to run the training loop. """
+    # Reproducibility
+    used_seed = set_seed(deterministic=False)
+    print(f"Seeding with {used_seed}")
     # 1. Initialization
     CHECKPOINT_DIR.mkdir(exist_ok=True)
     wandb.init(project=WANDB_PROJECT, config={
@@ -72,15 +76,20 @@ def train():
         return
     tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
 
-    # 3. Load and Prepare Data
+    # 3. Load and Prepare Data (train/val split)
     print("Loading and tokenizing WikiText-2 dataset...")
-    wikitext = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
-    # Concatenate all text and tokenize
-    all_text = " ".join([text for text in wikitext["text"] if text.strip()])
+    full = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    all_text = " ".join([text for text in full["text"] if text.strip()])
     token_ids = tokenizer.encode(all_text).ids
-    train_dataset = TextDataset(token_ids, SEQ_LEN)
+
+    split_idx = int(0.95 * len(token_ids))
+    train_ids, val_ids = token_ids[:split_idx], token_ids[split_idx:]
+
+    train_dataset = TextDataset(train_ids, SEQ_LEN)
+    val_dataset = TextDataset(val_ids, SEQ_LEN)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    print(f"Dataset created with {len(train_loader)} batches.")
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    print(f"Datasets created: train_batches={len(train_loader)}, val_batches={len(val_loader)}")
 
     # 4. Model, Optimizer, Loss, Scheduler
     model = TinyGPT(VOCAB_SIZE, D_MODEL, N_LAYERS, N_HEADS, MAX_LEN).to(device)
@@ -112,6 +121,22 @@ def train():
                 wandb.log({"loss": loss.item(), "lr": scheduler.get_last_lr()[0]})
                 print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Step [{step}], Loss: {loss.item():.4f}")
             step += 1
+
+        # Validation: compute loss and perplexity
+        model.eval()
+        val_loss = 0.0
+        val_tokens = 0
+        with torch.no_grad():
+            for inputs, targets in val_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                logits, _ = model(inputs)
+                batch_loss = criterion(logits.view(-1, VOCAB_SIZE), targets.view(-1))
+                val_loss += batch_loss.item() * inputs.size(0)
+                val_tokens += inputs.size(0)
+        val_loss /= max(val_tokens, 1)
+        ppl = torch.exp(torch.tensor(val_loss)).item()
+        print(f"Validation — Epoch {epoch+1}: loss={val_loss:.4f}, ppl={ppl:.2f}")
+        wandb.log({"val/loss": val_loss, "val/ppl": ppl, "epoch": epoch + 1})
 
     # 6. Save final model
     final_path = CHECKPOINT_DIR / "checkpoint.pt"

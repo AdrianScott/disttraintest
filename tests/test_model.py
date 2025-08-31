@@ -14,13 +14,15 @@ MAX_LEN = 512
 @pytest.fixture
 def model() -> TinyGPT:
     """Instantiates the TinyGPT model for testing."""
-    return TinyGPT(
+    m = TinyGPT(
         vocab_size=VOCAB_SIZE, 
         d_model=D_MODEL, 
         n_layers=N_LAYERS, 
         n_heads=N_HEADS,
         max_len=MAX_LEN
     )
+    m.eval()  # disable dropout for deterministic tests
+    return m
 
 def test_model_shape_flow(model: TinyGPT):
     """ 
@@ -51,12 +53,14 @@ def test_causal_mask(model: TinyGPT):
     the same whether the input sequence is of length `t+1` or `t+2`.
     """
     # Input sequences of two different lengths
+    torch.manual_seed(0)
     input1 = torch.randint(0, VOCAB_SIZE, (1, 5))
     input2 = input1.clone()
 
     # Get outputs
-    output1, _ = model(input1)
-    output2, _ = model(input2[:, :-1]) # Pass a shorter sequence
+    with torch.no_grad():
+        output1, _ = model(input1)
+        output2, _ = model(input2[:, :-1]) # Pass a shorter sequence
 
     # The logits for the first 4 tokens should be nearly identical
     assert torch.allclose(output1[:, :-1, :], output2, atol=1e-6), \

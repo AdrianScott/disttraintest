@@ -51,6 +51,7 @@ def format_elapsed_time(seconds):
 
 from src.model import TinyGPT
 from src.utils.perf import AverageMeter
+from src.utils.seed import set_seed
 
 # --- Constants ---
 VOCAB_SIZE = 16_000  # Set by tokenizer
@@ -195,7 +196,11 @@ def train(args):
 
     # Start overall timer
     training_start_time = time.time()
-    
+    # Seeding (same seed across ranks is OK for model init; data loader handled by sampler)
+    used_seed = set_seed()
+    if rank == 0:
+        print(f"Seeding with {used_seed}")
+
     print(f"Rank {rank}: Starting train() function at {time.strftime('%Y-%m-%d %H:%M:%S')} with local_rank={local_rank}, world_size={world_size}")
     
     # Print network information

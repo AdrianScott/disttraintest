@@ -13,6 +13,27 @@ This repository is prepared to work with MLOps best practices, including contain
 
 ---
 
+## Developer Quick Start
+
+For local development without Docker, use the Makefile shortcuts:
+
+```bash
+# 1) Install dependencies (prod + dev)
+make install
+
+# 2) Prepare data and tokenizer
+make prepare-data
+
+# 3) Run tests and lint
+make test
+make lint   # or: make fmt
+
+# 4) Validate distributed setup and train (adjust envs)
+make ddp-test N_PROCS_PER_NODE=2
+make ddp-train N_PROCS_PER_NODE=2 NNODES=1
+```
+
+
 ## Project Architecture
 
 ### Model Layers
